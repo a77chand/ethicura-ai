@@ -2,7 +2,7 @@
 
 > *Empowering digital trust through real-time, interpretable deepfake detection.*
 
-![Project Summary](assets/project_summary.png)
+![Project Summary](assets/summary.png)
 
 ## ‣ Demo:
 
