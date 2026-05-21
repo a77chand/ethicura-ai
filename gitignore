@@ -1,0 +1,36 @@
+# Model weights (too large for GitHub — use Git LFS or link to drive)
+*.h5
+*.pb
+*.ckpt
+*.pth
+saved_model/
+
+# Data
+data/
+datasets/
+*.csv
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Temp files
+/tmp/
+temp/
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
