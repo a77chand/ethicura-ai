@@ -180,8 +180,4 @@ Ethicura AI was built with responsible deployment in mind:
 - Does not store uploaded content
 - See [`docs/model_card.md`](docs/model_card.md) for full bias analysis and limitations
 
----
-
-## 📄 License
-
-MIT License — see [LICENSE](LICENSE) for details.
+--- 
