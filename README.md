@@ -1,10 +1,10 @@
-# Ethicura AI — Unified DeepFake Detection Framework (UDDF)
+# ‣ Ethicura AI — Unified DeepFake Detection Framework (UDDF)
 
 > *Empowering digital trust through real-time, interpretable deepfake detection.*
 
 ![Project Summary](assets/project_summary.png)
 
-## Demo:
+## ‣ Demo:
 
 https://github.com/user-attachments/assets/demo.mp4
 
@@ -12,7 +12,7 @@ https://github.com/user-attachments/assets/demo.mp4
 
 ---
 
-## The Problem:
+## ‣ The Problem:
 
 Deepfake technology makes it trivially easy to manipulate digital content — spreading misinformation, invading privacy, and damaging reputations. Individuals, businesses, and institutions face growing threats from scams, identity theft, and fake social media content.
 
@@ -20,7 +20,7 @@ We built Ethicura AI to give people a proactive, interpretable tool to verify co
 
 ---
 
-## Our Solution:
+## ‣ Our Solution:
 
 **Ethicura AI** is an end-to-end deepfake detection API and interface that:
 
@@ -34,7 +34,7 @@ We built Ethicura AI to give people a proactive, interpretable tool to verify co
 
 ---
 
-## Architecture:
+## ‣ Architecture:
 
 ```
 Input (Image / Video)
@@ -63,7 +63,7 @@ Output: Confidence Score + Annotated Frame
 
 ---
 
-## Model Performance:
+## ‣ Model Performance:
 
 Benchmarked against 9 leading deepfake detection models on FaceForensics++:
 
@@ -85,7 +85,7 @@ Benchmarked against 9 leading deepfake detection models on FaceForensics++:
 
 ---
 
-## Project Structure:
+## ‣ Project Structure:
 
 ```
 ethicura-ai/
@@ -113,7 +113,7 @@ ethicura-ai/
 
 ---
 
-## Setup & Usage:
+## ‣ Setup & Usage:
 
 ### 1. Clone and install
 ```bash
@@ -150,7 +150,7 @@ uvicorn src.api:app --reload
 
 ---
 
-## Future Potential:
+## ‣ Future Potential:
 
 - **Education & e-learning**: Verify authenticity of online instructional content, exams, and interviews
 - **Professional networking**: Assist platforms like LinkedIn, Glassdoor, and HR systems in verifying user genuineness
@@ -159,7 +159,7 @@ uvicorn src.api:app --reload
 
 ---
 
-## Technical Stack:
+## ‣ Technical Stack:
 
 | Component | Technology |
 |-----------|-----------|
@@ -172,7 +172,7 @@ uvicorn src.api:app --reload
 
 ---
 
-## Ethics & Responsible AI:
+## ‣ Ethics & Responsible AI:
 
 Ethicura AI was built with responsible deployment in mind:
 - Grad-CAM explanations ensure decisions are **interpretable**, not black-box
