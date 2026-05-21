@@ -6,7 +6,7 @@
 
 ## ‣ Demo:
 
-https://github.com/user-attachments/assets/demo.mp4
+[https://github.com/user-attachments/assets/demo.mp4](https://github.com/a77chand/ethicura-ai/raw/main/assets/api_3.mp4)
 
 > The demo shows Ethicura AI analysing a video of Elon Musk, correctly flagging it as a deepfake with a **57.5% fake confidence score** and Grad-CAM saliency overlay highlighting the manipulated facial regions.
 
