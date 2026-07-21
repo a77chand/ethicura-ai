@@ -11,12 +11,24 @@ Usage:
     uvicorn src.api:app --reload --host 0.0.0.0 --port 8000
 """
 
+import os
+
+# Disable XLA JIT compilation BEFORE tensorflow is imported anywhere.
+# On a weak/shared CPU (e.g. Render's free tier, 0.1 CPU), XLA's first-call
+# JIT compile step has been observed taking 8-11 MINUTES (confirmed in
+# production logs: "slow_operation_alarm.cc:140] The operation took
+# 10m50s"), because XLA is optimizing for repeat-call speed on real hardware,
+# not for a CPU this constrained. Disabling it trades a small per-call
+# overhead for avoiding that multi-minute one-time compile stall entirely —
+# essential for this to be usable on constrained/free hosting tiers.
+os.environ["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=0"
+os.environ["XLA_FLAGS"] = "--xla_gpu_autotune_level=0"
+
 import io
 import base64
 import cv2
 import numpy as np
 import tempfile
-import os
 from pathlib import Path
 from typing import Optional
 
