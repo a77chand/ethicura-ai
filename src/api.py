@@ -12,13 +12,16 @@ Usage:
 """
 
 import io
+import base64
 import cv2
 import numpy as np
 import tempfile
 import os
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
@@ -36,6 +39,17 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# Allow the React frontend (running on a different origin — localhost during
+# dev, a vercel.app domain once deployed) to call this API from the browser.
+# Wide open ("*") is fine for a hackathon demo API with no auth/user data;
+# tighten this to your actual frontend domain before any real production use.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Singleton detector (loaded once, reused across requests)
 detector = EthicuraDetector()
 
@@ -50,13 +64,13 @@ class PredictionResponse(BaseModel):
     filename: str
     file_type: str           # "image" or "video"
     label: str               # "FAKE", "REAL", or "UNKNOWN"
-    confidence: float | None # Fake probability 0–100%
+    confidence: Optional[float]  # Fake probability 0-100%
     face_detected: bool
-    message: str | None
+    message: Optional[str]
     # For video:
-    fake_frame_count: int | None = None
-    total_frames_sampled: int | None = None
-    fake_ratio: float | None = None
+    fake_frame_count: Optional[int] = None
+    total_frames_sampled: Optional[int] = None
+    fake_ratio: Optional[float] = None
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -172,6 +186,63 @@ async def predict_with_gradcam(file: UploadFile = File(...)):
                 "X-Ethicura-Label": result["label"],
                 "X-Ethicura-Confidence": str(result.get("confidence", "")),
             }
+        )
+    finally:
+        os.unlink(tmp_path)
+
+
+class FramePredictionResponse(BaseModel):
+    label: str                # "FAKE", "REAL", or "UNKNOWN"
+    confidence: Optional[float]  # Fake probability 0-100%
+    face_detected: bool
+    overlay_png_base64: Optional[str]  # base64-encoded PNG, or None if no face
+    message: Optional[str] = None
+
+
+@app.post("/predict_frame", response_model=FramePredictionResponse)
+async def predict_frame(payload: dict):
+    """
+    Live-webcam-friendly variant of /predict/gradcam.
+
+    Accepts a base64-encoded JPEG frame (as JSON, not multipart file upload —
+    simpler for a browser sending frequent frames from a <canvas>) and returns
+    the label, confidence, and Grad-CAM overlay as base64 PNG in one JSON
+    response, so the frontend doesn't need to juggle separate header/body
+    parsing like /predict/gradcam does.
+
+    Request body: {"image_base64": "<base64 jpeg data, no data: prefix>"}
+    """
+    image_b64 = payload.get("image_base64")
+    if not image_b64:
+        raise HTTPException(status_code=400, detail="Missing 'image_base64' in request body.")
+
+    # Strip a data URL prefix if the frontend sent one (e.g. "data:image/jpeg;base64,...")
+    if "," in image_b64[:50]:
+        image_b64 = image_b64.split(",", 1)[1]
+
+    try:
+        image_bytes = base64.b64decode(image_b64)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid base64 image data.")
+
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+        tmp.write(image_bytes)
+        tmp_path = tmp.name
+
+    try:
+        result = detector.predict(tmp_path)
+
+        overlay_b64 = None
+        if result["face_detected"] and result.get("gradcam_overlay") is not None:
+            _, img_encoded = cv2.imencode(".png", result["gradcam_overlay"])
+            overlay_b64 = base64.b64encode(img_encoded.tobytes()).decode("utf-8")
+
+        return FramePredictionResponse(
+            label=result["label"],
+            confidence=result.get("confidence"),
+            face_detected=result["face_detected"],
+            overlay_png_base64=overlay_b64,
+            message=result.get("message"),
         )
     finally:
         os.unlink(tmp_path)

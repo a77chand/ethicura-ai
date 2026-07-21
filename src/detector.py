@@ -40,46 +40,60 @@ class EthicuraDetector:
     # Lazy loading — don't import heavy libs until actually needed
     # ──────────────────────────────────────────────────────────────────────────
 
+    # Input size expected by the classifier. EfficientNetB0 backbone uses 224x224
+    # (Xception in the original design used 299x299 — kept here as a class attr
+    # so the rest of the pipeline can stay agnostic to which backbone is loaded).
+    INPUT_SIZE = 224
+
     def _load_models(self):
-        """Initialise MTCNN, XceptionNet, and Grad-CAM on first use."""
+        """Initialise MTCNN, classifier, and Grad-CAM on first use.
+
+        Classifier: pretrained EfficientNetB0-based deepfake detector
+        (ariyul/deepfake-detection-cnn_v2 on Hugging Face). This replaces the
+        original from-scratch XceptionNet head, which had no trained weights
+        checked into the repo (weights are gitignored and were never
+        committed). Swapping in a real trained model here so the pipeline
+        produces meaningful predictions rather than an untrained sigmoid head
+        on frozen ImageNet features.
+        """
         if self._model is not None:
             return  # already loaded
 
         try:
             from mtcnn import MTCNN
-            from tensorflow.keras.applications import Xception
-            from tensorflow.keras.models import Model, load_model
-            from tensorflow.keras.layers import GlobalAveragePooling2D, Dense, Dropout
-            import tensorflow as tf
+            import os
+            os.environ.setdefault("KERAS_BACKEND", "tensorflow")
+            import keras
+            from huggingface_hub import snapshot_download
 
             # ── Face detector ──────────────────────────────────────────────
             self._face_detector = MTCNN()
 
-            # ── XceptionNet classifier ─────────────────────────────────────
+            # ── Classifier ──────────────────────────────────────────────────
             if self.model_path and Path(self.model_path).exists():
-                self._model = load_model(self.model_path)
+                self._model = keras.saving.load_model(self.model_path)
                 print(f"[Ethicura] Loaded fine-tuned weights from {self.model_path}")
             else:
-                # Build architecture (requires fine-tuned weights for production accuracy)
-                base = Xception(
-                    weights="imagenet",
-                    include_top=False,
-                    input_shape=(299, 299, 3)
-                )
-                x = GlobalAveragePooling2D()(base.output)
-                x = Dropout(0.5)(x)
-                out = Dense(1, activation="sigmoid")(x)
-                self._model = Model(inputs=base.input, outputs=out)
-                print("[Ethicura] Warning: Using ImageNet weights. Fine-tune on FaceForensics++ for production use.")
+                print("[Ethicura] No local model_path given — downloading pretrained "
+                      "EfficientNetB0 deepfake classifier from Hugging Face "
+                      "(ariyul/deepfake-detection-cnn_v2)...")
+                local_dir = snapshot_download(repo_id="ariyul/deepfake-detection-cnn_v2")
+                weights_path = os.path.join(local_dir, "keras_model", "best_model.keras")
+                self._model = keras.saving.load_model(weights_path)
+                print("[Ethicura] Loaded pretrained EfficientNetB0 deepfake classifier.")
 
             # ── Grad-CAM ───────────────────────────────────────────────────
+            # EfficientNetB0 is loaded here as a nested Functional submodel
+            # (named "efficientnetb0"), not flat conv layers at the top level,
+            # so Grad-CAM targets that submodel's own last layer rather than a
+            # named layer string like the original Xception setup used.
             from src.gradcam import GradCAM
-            self._gradcam = GradCAM(self._model, layer_name="block14_sepconv2_act")
+            self._gradcam = GradCAM(self._model, layer_name="efficientnetb0")
 
         except ImportError as e:
             raise ImportError(
                 f"Missing dependency: {e}\n"
-                "Install with: pip install mtcnn tensorflow opencv-python"
+                "Install with: pip install mtcnn tensorflow keras huggingface_hub opencv-python"
             )
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -229,12 +243,17 @@ class EthicuraDetector:
         return face_crop, bbox
 
     def _preprocess(self, face_rgb: np.ndarray) -> np.ndarray:
-        """Resize and normalise face crop for XceptionNet input."""
-        import tensorflow as tf
-        face = cv2.resize(face_rgb, (299, 299))
-        face = face.astype("float32")
-        face = tf.keras.applications.xception.preprocess_input(face)
-        return np.expand_dims(face, axis=0)  # shape: (1, 299, 299, 3)
+        """Resize and normalise face crop for the classifier's expected input.
+
+        The pretrained EfficientNetB0 model was trained with simple 0-1
+        rescaling (img / 255.0), per its model card — not Xception's
+        preprocess_input, which uses a different normalisation scheme.
+        Using the wrong normalisation silently produces garbage predictions,
+        so this matters even though the code still "runs" either way.
+        """
+        face = cv2.resize(face_rgb, (self.INPUT_SIZE, self.INPUT_SIZE))
+        face = face.astype("float32") / 255.0
+        return np.expand_dims(face, axis=0)  # shape: (1, 224, 224, 3)
 
     @staticmethod
     def _overlay_cam(image_rgb: np.ndarray, cam: np.ndarray, bbox: dict) -> np.ndarray:

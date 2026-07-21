@@ -29,13 +29,36 @@ class GradCAM:
     def __init__(self, model: tf.keras.Model, layer_name: str):
         self.model = model
         self.layer_name = layer_name
+        self.target_layer = model.get_layer(layer_name)
 
-        # Build a sub-model that outputs (target layer activations, final predictions)
-        target_layer = model.get_layer(layer_name)
-        self.grad_model = tf.keras.Model(
-            inputs=model.inputs,
-            outputs=[target_layer.output, model.output]
-        )
+        # NOTE on implementation: we deliberately do NOT build a spliced
+        # tf.keras.Model like `Model(inputs=model.inputs, outputs=[target_layer.output, model.output])`.
+        #
+        # That approach works fine when layer_name is a plain conv layer
+        # inside a flat model (the original Xception design), but breaks when
+        # layer_name is a *nested Functional submodel* (our current
+        # EfficientNetB0 setup, where the backbone is one named submodel
+        # rather than flat conv layers). In Keras 3, reaching into a nested
+        # submodel's output tensor this way raises
+        # "ValueError: Output with path `0` is not connected to `inputs`"
+        # and even when it doesn't raise, gradients w.r.t. that tensor come
+        # back as None — the tape loses the connection across the submodel
+        # boundary.
+        #
+        # The fix used in compute() below: replay the model's top-level
+        # layers one at a time as plain callables *inside* the
+        # GradientTape context, rather than asking Keras to build a new
+        # graph object that reuses an existing internal tensor. This keeps
+        # everything tape-tracked in a single eager pass and works for both
+        # flat layers and nested submodels.
+        self._layer_sequence = self._get_layers_after(layer_name)
+
+    def _get_layers_after(self, layer_name: str) -> list:
+        """Return the model's layers in order, starting after (not including)
+        the target layer, so compute() can replay the remaining forward pass."""
+        layers = self.model.layers
+        idx = next(i for i, l in enumerate(layers) if l.name == layer_name)
+        return layers[idx + 1:]
 
     def compute(self, preprocessed_input: np.ndarray) -> np.ndarray:
         """
@@ -50,7 +73,20 @@ class GradCAM:
         """
         with tf.GradientTape() as tape:
             inputs = tf.cast(preprocessed_input, tf.float32)
-            conv_outputs, predictions = self.grad_model(inputs)
+
+            # Forward pass up to and including the target layer
+            conv_outputs = self.target_layer(inputs, training=False)
+            tape.watch(conv_outputs)
+
+            # Replay the remaining layers manually (GlobalAveragePooling2D,
+            # Dropout, Dense, etc.) so the tape stays connected across the
+            # nested-submodel boundary. See __init__ for why this is
+            # necessary instead of a spliced tf.keras.Model.
+            x = conv_outputs
+            for layer in self._layer_sequence:
+                x = layer(x, training=False)
+            predictions = x
+
             # For binary classification, index 0 = fake probability
             loss = predictions[:, 0]
 
