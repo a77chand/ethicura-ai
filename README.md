@@ -4,6 +4,10 @@
 
 ![Project Summary](assets/summary.png)
 
+## ‣ Live Demo:
+
+**[ethicura-frontend.vercel.app](https://ethicura-frontend.vercel.app)**: live webcam deepfake analysis with a Grad-CAM overlay, running in your browser against the hosted API. The API sleeps when idle, so the first visit after a break shows "waking server" for about 20 seconds.
+
 ## ‣ Demo:
 
 [https://github.com/user-attachments/assets/demo.mp4](https://github.com/a77chand/ethicura-ai/raw/main/assets/api_3.mp4)
@@ -103,6 +107,8 @@ ethicura-ai/
 │   └── model_card.md        # Model card (bias, limitations, intended use)
 ├── fetch_and_test_model.py  # Downloads the pretrained model and runs a smoke test
 ├── test_full_pipeline.py    # End-to-end test: face detection → classification → Grad-CAM
+├── modal_app.py             # Modal deployment (hosts the live API)
+├── Dockerfile               # Container image for other hosts
 ├── render.yaml              # Render deployment config
 ├── requirements.txt
 └── README.md
@@ -167,7 +173,21 @@ npm run dev
 The frontend keeps the live webcam feed on screen and draws the Grad-CAM heatmap and face box over it. Frames are sent back-to-back, with the next frame captured as soon as the previous result arrives, so analysis always runs on the current frame and requests never queue up. It points at `http://localhost:8000` by default; set `VITE_API_URL` at build time to use a deployed backend.
 
 ### 6. Deploy
-The `Dockerfile` builds the API with the model baked in, listening on port 7860. That's the setup Hugging Face Spaces (Docker SDK) expects, and its free CPU tier (2 vCPU, 16 GB RAM) comfortably fits TensorFlow. `render.yaml` is kept for Render, but the free tier's 512 MB RAM / 0.1 CPU is too small for live webcam use. XLA JIT is disabled in `src/api.py` because its first-call compile stalled for many minutes on constrained CPUs.
+The hosted API runs on [Modal](https://modal.com) (2 vCPU / 4 GB, scales to zero when idle):
+```bash
+pip install modal
+modal token new            # one-time browser login
+modal deploy modal_app.py
+```
+A cold start takes about 7 s to answer and about 22 s until `model_ready`. Once warm, inference is about 170 ms per frame and the webcam UI runs at about 5 frames/s.
+
+The frontend is deployed on Vercel. `ethicura-frontend/.env.production` sets `VITE_API_URL` to the Modal endpoint.
+
+Other options:
+- The `Dockerfile` builds a self-contained image (model baked in, port 7860) for any container host, including Hugging Face Docker Spaces, which now require a PRO plan.
+- `render.yaml` is kept for Render, but the free tier's 512 MB RAM / 0.1 CPU is too small for live webcam use.
+
+XLA JIT is disabled in `src/api.py` because its first-call compile stalled for many minutes on constrained CPUs.
 
 ---
 
@@ -188,10 +208,10 @@ The `Dockerfile` builds the API with the model baked in, listening on port 7860.
 | Classification | EfficientNetB0 (pretrained, `ariyul/deepfake-detection-cnn_v2`) |
 | Interpretability | Grad-CAM (Class Activation Mapping) |
 | API | FastAPI |
-| Frontend | React + Vite (webcam streaming) |
+| Frontend | React + Vite (webcam streaming), hosted on Vercel |
 | Deep Learning | TensorFlow / Keras |
 | Video Processing | OpenCV |
-| Hosting | Render |
+| API Hosting | Modal |
 
 ---
 
