@@ -24,7 +24,8 @@ We built Ethicura AI to give people a proactive, interpretable tool to verify co
 
 **Ethicura AI** is an end-to-end deepfake detection API and interface that:
 
-- Detects manipulated **images and videos** using **XceptionNet** for classification and **MTCNN** for face extraction
+- Detects manipulated **images and videos** using a pretrained **EfficientNetB0** classifier ([`ariyul/deepfake-detection-cnn_v2`](https://huggingface.co/ariyul/deepfake-detection-cnn_v2) on Hugging Face) and **MTCNN** for face extraction
+- Supports **live webcam analysis** via a React frontend that streams frames to the API
 - Provides **real-time confidence scores** (fake probability 0–100%)
 - Generates **Grad-CAM visualisations** to highlight the exact facial regions that triggered the detection — making the model's decision transparent and auditable
 - Identifies three types of manipulation:
@@ -47,8 +48,8 @@ Input (Image / Video)
         │
         ▼
 ┌───────────────────┐
-│   XceptionNet     │  ← Deepfake classification
-│   Classifier      │     Fine-tuned on FaceForensics++
+│   EfficientNetB0  │  ← Deepfake classification
+│   Classifier      │     Pretrained (Hugging Face), 224×224 input
 └───────────────────┘
         │
         ▼
@@ -90,26 +91,24 @@ Benchmarked against 9 leading deepfake detection models on FaceForensics++:
 ```
 ethicura-ai/
 ├── src/
-│   ├── detector.py          # Core detection pipeline (MTCNN + XceptionNet)
+│   ├── detector.py          # Core detection pipeline (MTCNN + EfficientNetB0 + Grad-CAM)
 │   ├── gradcam.py           # Grad-CAM visualisation module
-│   ├── video_processor.py   # Frame extraction and video analysis
-│   ├── api.py               # FastAPI REST endpoint
-│   └── utils.py             # Preprocessing and helper functions
-├── notebooks/
-│   ├── model_training.ipynb         # XceptionNet fine-tuning notebook
-│   ├── gradcam_visualisation.ipynb  # Grad-CAM analysis and examples
-│   └── benchmark_comparison.ipynb  # Model benchmarking results
+│   └── api.py               # FastAPI REST endpoints (incl. webcam /predict_frame)
 ├── demo/
 │   └── run_demo.py          # Standalone demo script
 ├── assets/
-│   ├── project_summary.png  # Project overview image
-│   └── demo.mp4             # Demo video
+│   ├── summary.png          # Project overview image
+│   └── api_3.mp4            # Demo video
 ├── docs/
 │   └── model_card.md        # Model card (bias, limitations, intended use)
+├── fetch_and_test_model.py  # Downloads the pretrained model and runs a smoke test
+├── test_full_pipeline.py    # End-to-end test: face detection → classification → Grad-CAM
+├── render.yaml              # Render deployment config
 ├── requirements.txt
-├── .gitignore
 └── README.md
 ```
+
+The React webcam frontend lives in a separate project, `ethicura-frontend/` (Vite + React). It is not part of this repository.
 
 ---
 
@@ -145,8 +144,28 @@ print(f"Overall verdict: {result['verdict']}")
 ```bash
 uvicorn src.api:app --reload
 # API available at http://localhost:8000
-# POST /predict with image/video file
 ```
+
+On first use the pretrained model is downloaded from Hugging Face and cached locally.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check |
+| `/model-info` | GET | Model and benchmark summary |
+| `/predict` | POST | Upload an image or video (multipart `file`) → label, confidence, per-video stats |
+| `/predict/gradcam` | POST | Upload an image → Grad-CAM overlay as PNG (label/confidence in `X-Ethicura-*` headers) |
+| `/predict_frame` | POST | JSON `{"image_base64": "..."}` → label, confidence and base64 PNG overlay; built for live webcam use |
+
+### 5. Run the webcam frontend
+```bash
+cd ../ethicura-frontend
+npm install
+npm run dev
+```
+The frontend captures a webcam frame every 2.5 s and posts it to `/predict_frame`. It points at `http://localhost:8000` by default; change `API_URL` in `src/App.jsx` to use a deployed backend.
+
+### 6. Deploy
+`render.yaml` configures a Render web service. XLA JIT is disabled in `src/api.py` because its first-call compile stalled for many minutes on Render's free-tier CPU.
 
 ---
 
@@ -164,11 +183,13 @@ uvicorn src.api:app --reload
 | Component | Technology |
 |-----------|-----------|
 | Face Detection | MTCNN (Multi-Task Cascaded CNN) |
-| Classification | XceptionNet (fine-tuned on FaceForensics++) |
+| Classification | EfficientNetB0 (pretrained, `ariyul/deepfake-detection-cnn_v2`) |
 | Interpretability | Grad-CAM (Class Activation Mapping) |
 | API | FastAPI |
+| Frontend | React + Vite (webcam streaming) |
 | Deep Learning | TensorFlow / Keras |
 | Video Processing | OpenCV |
+| Hosting | Render |
 
 ---
 
