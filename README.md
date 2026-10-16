@@ -8,11 +8,13 @@
 
 **[ethicura-frontend.vercel.app](https://ethicura-frontend.vercel.app)**: live webcam deepfake analysis with a Grad-CAM overlay, running in your browser against the hosted API. The API sleeps when idle, so the first visit after a break shows "waking server" for about 20 seconds.
 
-## ‣ Demo:
+Interactive API docs: [/docs on the hosted API](https://anusha-chandra-007--ethicura-ai-api-api.us-east.modal.run/docs)
+
+## ‣ Demo Video:
 
 [https://github.com/user-attachments/assets/demo.mp4](https://github.com/a77chand/ethicura-ai/raw/main/assets/api_3.mp4)
 
-> The demo shows Ethicura AI analysing a video of Elon Musk, correctly flagging it as a deepfake with a **57.5% fake confidence score** and Grad-CAM saliency overlay highlighting the manipulated facial regions.
+> The video shows the original XceptionNet version of Ethicura AI analysing a video of Elon Musk. It flags the video as a deepfake with a **57.5% fake confidence score**, and a Grad-CAM saliency overlay highlights the manipulated facial regions.
 
 ---
 
@@ -70,7 +72,9 @@ Output: Confidence Score + Annotated Frame
 
 ## ‣ Model Performance:
 
-Benchmarked against 9 leading deepfake detection models on FaceForensics++:
+> **Which model these numbers describe:** the results below are from the original research model, an XceptionNet fine-tuned on FaceForensics++. Its trained weights were never committed to this repo, so the current code and the live demo use a third-party pretrained EfficientNetB0 ([`ariyul/deepfake-detection-cnn_v2`](https://huggingface.co/ariyul/deepfake-detection-cnn_v2)). These benchmark figures don't apply to that model.
+
+The XceptionNet model was benchmarked against 10 leading deepfake detection models on FaceForensics++:
 
 | Model | Accuracy (%) | Precision (%) | Recall (%) | F1-Score (%) | AUC-ROC |
 |-------|-------------|---------------|------------|--------------|---------|
@@ -86,7 +90,7 @@ Benchmarked against 9 leading deepfake detection models on FaceForensics++:
 | SeimSafer (EfficientNet) | 92 | 90 | 89 | 89.5 | 0.94 |
 | CNNDetection | 91 | 89 | 88 | 88.5 | 0.93 |
 
-**Our XceptionNet-based model achieves the highest performance across all metrics.**
+**The XceptionNet model achieved the highest performance across all metrics.**
 
 ---
 
@@ -122,7 +126,7 @@ The React webcam frontend lives in a separate project, `ethicura-frontend/` (Vit
 
 ### 1. Clone and install
 ```bash
-git clone https://github.com/yourusername/ethicura-ai.git
+git clone https://github.com/a77chand/ethicura-ai.git
 cd ethicura-ai
 pip install -r requirements.txt
 ```
@@ -170,7 +174,7 @@ cd ../ethicura-frontend
 npm install
 npm run dev
 ```
-The frontend keeps the live webcam feed on screen and draws the Grad-CAM heatmap and face box over it. Frames are sent back-to-back, with the next frame captured as soon as the previous result arrives, so analysis always runs on the current frame and requests never queue up. It points at `http://localhost:8000` by default; set `VITE_API_URL` at build time to use a deployed backend.
+The frontend keeps the live webcam feed on screen and draws the Grad-CAM heatmap and face box over it, gliding the box between results. Two frames are kept in flight, so one uploads while the other is being processed. Each frame is captured at send time, and any out-of-order response is dropped, so analysis always runs on the current frame and requests never pile up. The page polls `/health` on load and shows "waking server" while a cold backend starts up. It points at `http://localhost:8000` by default; set `VITE_API_URL` at build time to use a deployed backend.
 
 ### 6. Deploy
 The hosted API runs on [Modal](https://modal.com) (2 vCPU / 4 GB, scales to zero when idle):
@@ -221,6 +225,6 @@ Ethicura AI was built with responsible deployment in mind:
 - Grad-CAM explanations ensure decisions are **interpretable**, not black-box
 - Intended as a **warning tool**, not a definitive judge — users retain agency
 - Does not store uploaded content
-- See [`docs/model_card.md`](docs/model_card.md) for full bias analysis and limitations
+- See [`docs/model_card.md`](docs/model_card.md) for the bias analysis and limitations of the original XceptionNet model
 
 --- 
