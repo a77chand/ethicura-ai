@@ -150,11 +150,13 @@ On first use the pretrained model is downloaded from Hugging Face and cached loc
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/health` | GET | Health check |
+| `/health` | GET | Health check; `model_ready` turns true once the model is loaded and warmed up |
 | `/model-info` | GET | Model and benchmark summary |
 | `/predict` | POST | Upload an image or video (multipart `file`) → label, confidence, per-video stats |
 | `/predict/gradcam` | POST | Upload an image → Grad-CAM overlay as PNG (label/confidence in `X-Ethicura-*` headers) |
-| `/predict_frame` | POST | JSON `{"image_base64": "..."}` → label, confidence and base64 PNG overlay; built for live webcam use |
+| `/predict_frame` | POST | JSON `{"image_base64": "..."}` → label, confidence, `face_bbox` and the raw 7×7 Grad-CAM `heatmap` (~500 bytes); built for live webcam use. Add `"include_overlay": true` to also get the annotated frame as base64 PNG |
+
+The models load and warm up in a background thread at startup, so the port opens immediately and `/health` reports when inference is ready. Classification and Grad-CAM share a single traced forward/backward pass. On an Apple-silicon laptop a webcam frame takes about 130 ms end to end.
 
 ### 5. Run the webcam frontend
 ```bash
@@ -162,10 +164,10 @@ cd ../ethicura-frontend
 npm install
 npm run dev
 ```
-The frontend captures a webcam frame every 2.5 s and posts it to `/predict_frame`. It points at `http://localhost:8000` by default; change `API_URL` in `src/App.jsx` to use a deployed backend.
+The frontend keeps the live webcam feed on screen and draws the Grad-CAM heatmap and face box over it. Frames are sent back-to-back, with the next frame captured as soon as the previous result arrives, so analysis always runs on the current frame and requests never queue up. It points at `http://localhost:8000` by default; set `VITE_API_URL` at build time to use a deployed backend.
 
 ### 6. Deploy
-`render.yaml` configures a Render web service. XLA JIT is disabled in `src/api.py` because its first-call compile stalled for many minutes on Render's free-tier CPU.
+The `Dockerfile` builds the API with the model baked in, listening on port 7860. That's the setup Hugging Face Spaces (Docker SDK) expects, and its free CPU tier (2 vCPU, 16 GB RAM) comfortably fits TensorFlow. `render.yaml` is kept for Render, but the free tier's 512 MB RAM / 0.1 CPU is too small for live webcam use. XLA JIT is disabled in `src/api.py` because its first-call compile stalled for many minutes on constrained CPUs.
 
 ---
 

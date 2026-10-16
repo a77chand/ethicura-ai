@@ -3,6 +3,8 @@ ethicura_ai/src/detector.py
 Core detection pipeline: MTCNN face extraction → XceptionNet classification → Grad-CAM overlay.
 """
 
+import threading
+
 import cv2
 import numpy as np
 from pathlib import Path
@@ -35,6 +37,12 @@ class EthicuraDetector:
         self._model = None
         self._face_detector = None
         self._gradcam = None
+        # Serialises model loading and inference: the API serves requests
+        # from a thread pool, and on a small CPU running two frames at once
+        # only makes both slower.
+        self._lock = threading.RLock()
+        self.is_ready = False
+        self.load_error = None
 
     # ──────────────────────────────────────────────────────────────────────────
     # Lazy loading — don't import heavy libs until actually needed
@@ -56,6 +64,10 @@ class EthicuraDetector:
         produces meaningful predictions rather than an untrained sigmoid head
         on frozen ImageNet features.
         """
+        with self._lock:
+            self._load_models_locked()
+
+    def _load_models_locked(self):
         if self._model is not None:
             return  # already loaded
 
@@ -100,6 +112,21 @@ class EthicuraDetector:
     # Public API
     # ──────────────────────────────────────────────────────────────────────────
 
+    def warm_up(self):
+        """Load models and run one dummy inference so the first real request
+        doesn't pay for model download, graph tracing and MTCNN init."""
+        try:
+            self._load_models()
+            with self._lock:
+                dummy = np.zeros((1, self.INPUT_SIZE, self.INPUT_SIZE, 3), np.float32)
+                self._gradcam.compute_with_prediction(dummy)
+                self._face_detector.detect_faces(np.zeros((240, 320, 3), np.uint8))
+            self.is_ready = True
+            print("[Ethicura] Models warmed up and ready.")
+        except Exception as e:
+            self.load_error = str(e)
+            print(f"[Ethicura] Warm-up failed: {e}")
+
     def predict(self, image_path: str) -> dict:
         """
         Run deepfake detection on a single image.
@@ -114,39 +141,52 @@ class EthicuraDetector:
                 face_detected   : bool
                 gradcam_overlay : np.ndarray (BGR image with saliency heatmap)
                 face_bbox       : dict {x, y, w, h} or None
+                heatmap         : np.ndarray raw Grad-CAM grid (values 0-1) or None
         """
-        self._load_models()
-
         image = cv2.imread(image_path)
         if image is None:
             raise FileNotFoundError(f"Could not load image: {image_path}")
+        return self.predict_array(image)
 
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        face_crop, bbox = self._extract_face(image_rgb)
+    def predict_array(self, image_bgr: np.ndarray, with_overlay: bool = True) -> dict:
+        """
+        Same as predict(), for an already-decoded BGR image (e.g. a webcam
+        frame) — skips the temp-file round trip.
 
-        if face_crop is None:
-            return {
-                "label": "UNKNOWN",
-                "confidence": None,
-                "face_detected": False,
-                "gradcam_overlay": image,
-                "face_bbox": None,
-                "message": "No face detected in the image."
-            }
+        Args:
+            with_overlay: set False to skip rendering gradcam_overlay when the
+                          caller only needs the raw heatmap + bbox.
+        """
+        self._load_models()
 
-        # Preprocess for XceptionNet
-        face_input = self._preprocess(face_crop)
+        image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
 
-        # Classify
-        import tensorflow as tf
-        fake_prob = float(self._model.predict(face_input, verbose=0)[0][0])
+        with self._lock:
+            face_crop, bbox = self._extract_face(image_rgb)
+
+            if face_crop is None:
+                return {
+                    "label": "UNKNOWN",
+                    "confidence": None,
+                    "face_detected": False,
+                    "gradcam_overlay": image_bgr,
+                    "face_bbox": None,
+                    "heatmap": None,
+                    "message": "No face detected in the image."
+                }
+
+            face_input = self._preprocess(face_crop)
+
+            # Classify + Grad-CAM in a single forward/backward pass
+            cam, fake_prob = self._gradcam.compute_with_prediction(face_input)
+
         confidence = fake_prob * 100
         label = "FAKE" if fake_prob >= self.threshold else "REAL"
 
-        # Grad-CAM overlay
-        cam = self._gradcam.compute(face_input)
-        overlay = self._overlay_cam(image_rgb.copy(), cam, bbox)
-        overlay_bgr = cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR)
+        overlay_bgr = None
+        if with_overlay:
+            overlay = self._overlay_cam(image_rgb.copy(), cam, bbox)
+            overlay_bgr = cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR)
 
         return {
             "label": label,
@@ -154,6 +194,7 @@ class EthicuraDetector:
             "face_detected": True,
             "gradcam_overlay": overlay_bgr,
             "face_bbox": bbox,
+            "heatmap": cam,
         }
 
     def predict_video(self, video_path: str, sample_every: int = 10) -> dict:
@@ -221,15 +262,25 @@ class EthicuraDetector:
     # Private helpers
     # ──────────────────────────────────────────────────────────────────────────
 
+    # MTCNN's cost grows with image area, so detect on a copy no wider than
+    # this, then crop the face from the full-resolution image so the
+    # classifier still gets full detail.
+    DETECT_MAX_WIDTH = 320
+
     def _extract_face(self, image_rgb: np.ndarray):
         """Detect and crop the primary face using MTCNN."""
-        detections = self._face_detector.detect_faces(image_rgb)
+        scale = min(1.0, self.DETECT_MAX_WIDTH / image_rgb.shape[1])
+        detect_input = image_rgb
+        if scale < 1.0:
+            detect_input = cv2.resize(image_rgb, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+
+        detections = self._face_detector.detect_faces(detect_input)
         if not detections:
             return None, None
 
         # Take the highest-confidence detection
         best = max(detections, key=lambda d: d["confidence"])
-        x, y, w, h = best["box"]
+        x, y, w, h = (int(round(v / scale)) for v in best["box"])
 
         # Add 20% margin around the face
         margin = int(0.2 * max(w, h))

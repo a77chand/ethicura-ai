@@ -53,6 +53,15 @@ class GradCAM:
         # flat layers and nested submodels.
         self._layer_sequence = self._get_layers_after(layer_name)
 
+        # Trace the forward+backward pass into a TF graph once, instead of
+        # dispatching ~240 EfficientNet layers eagerly from Python on every
+        # call. Pinned to a single-image signature so it never retraces.
+        input_shape = (1,) + tuple(model.input_shape[1:])
+        self._compute_graph = tf.function(
+            self._compute_tensors,
+            input_signature=[tf.TensorSpec(input_shape, tf.float32)],
+        )
+
     def _get_layers_after(self, layer_name: str) -> list:
         """Return the model's layers in order, starting after (not including)
         the target layer, so compute() can replay the remaining forward pass."""
@@ -65,15 +74,33 @@ class GradCAM:
         Compute Grad-CAM heatmap for a single preprocessed input.
 
         Args:
-            preprocessed_input: np.ndarray of shape (1, 299, 299, 3)
+            preprocessed_input: np.ndarray of shape (1, H, W, 3)
 
         Returns:
-            cam: np.ndarray of shape (H, W) with values in [0, 1]
+            cam: np.ndarray of shape (h, w) with values in [0, 1]
                  where higher values = more influential for the FAKE prediction
         """
-        with tf.GradientTape() as tape:
-            inputs = tf.cast(preprocessed_input, tf.float32)
+        cam, _ = self.compute_with_prediction(preprocessed_input)
+        return cam
 
+    def compute_with_prediction(self, preprocessed_input: np.ndarray):
+        """
+        Grad-CAM heatmap plus the model's fake probability, from one pass.
+
+        The replayed forward pass in _compute_tensors runs the whole model
+        (target submodel → pooling → dense), so its output *is* the
+        prediction — no need for a separate model.predict() call.
+
+        Returns:
+            (cam, fake_prob): cam as in compute(), fake_prob as a float 0-1
+        """
+        cam, predictions = self._compute_graph(
+            tf.convert_to_tensor(preprocessed_input, tf.float32)
+        )
+        return cam.numpy(), float(predictions[0, 0])
+
+    def _compute_tensors(self, inputs):
+        with tf.GradientTape() as tape:
             # Forward pass up to and including the target layer
             conv_outputs = self.target_layer(inputs, training=False)
             tape.watch(conv_outputs)
@@ -104,7 +131,7 @@ class GradCAM:
         # ReLU (only positive influences), then normalise to [0, 1]
         cam = tf.maximum(cam, 0) / (tf.math.reduce_max(cam) + 1e-8)
 
-        return cam.numpy()
+        return cam, predictions
 
     def compute_and_explain(
         self,
