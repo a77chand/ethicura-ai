@@ -174,7 +174,7 @@ ethicura-ai/
 └── README.md
 ```
 
-The React webcam frontend lives in a separate project, `ethicura-frontend/` (Vite + React). It is not part of this repository.
+The in-browser frontend (React + Vite, ONNX Runtime Web, MediaPipe) lives in its own repo: **[a77chand/ethicura-frontend](https://github.com/a77chand/ethicura-frontend)**.
 
 ---
 
@@ -226,7 +226,7 @@ The models load and warm up in a background thread at startup, so the port opens
 
 ### 5. Run the webcam frontend
 ```bash
-cd ../ethicura-frontend
+git clone https://github.com/a77chand/ethicura-frontend.git && cd ethicura-frontend
 npm install
 npm run dev
 ```
