@@ -101,6 +101,47 @@ The XceptionNet model was benchmarked against 10 leading deepfake detection mode
 
 ---
 
+## ‣ Training an In-House Model (in progress):
+
+[`training/run.py`](training/run.py) trains and evaluates a replacement for the third-party model end to end. It runs on a free Kaggle T4 GPU through [`training/kaggle/`](training/kaggle/). Results will be added here once the run completes. Until then, no performance claims are made for it.
+
+**Data**
+- **[DeepFakeFace](https://huggingface.co/datasets/OpenRL/DeepFakeFace)** (OpenRAIL): 30k real IMDB-WIKI photos. Each has one fake from each of three generators: Stable Diffusion inpainting, InsightFace face swap and Stable Diffusion text-to-image.
+- **[SDFVD](https://huggingface.co/datasets/Hemgg/SDFVD-video-dataset):** 53 real and 53 face-swapped videos from a commercial tool. It's used **only as an out-of-domain test set**.
+
+**Shortcut controls.** Inspecting the raw data showed two easy cues that have nothing to do with manipulation:
+- **Size and format:** real photos have varied sizes, about 7.5% are grayscale, and some are PNG. Every fake is a 512×512 colour JPEG.
+- **Sharpness:** small real faces upscale to blur, while the fakes are sharp.
+
+A model can score well by learning these cues and then fail on real webcam input. The pipeline closes them as follows:
+- **Grayscale images are dropped** from every class.
+- **Every image goes through the API's own MTCNN face crop** and is re-encoded identically, which removes size and format differences.
+- **Faces under 80 px wide are dropped.** Training also applies random blur, downscaling and JPEG recompression (q35–100) to **both** classes, so sharpness and compression carry no label information.
+- **Splits are by person (80/10/10):** a celebrity's real photo and all of its fakes always land in the same split.
+
+**Training**
+- **Model:** EfficientNetB0 (ImageNet), chosen for CPU latency in the live service and WebGPU in the browser.
+- **Schedule:** the head is trained first on the frozen backbone, then the whole network is fine-tuned with AdamW and cosine decay.
+- **Batches are class-balanced,** with the fakes split evenly across the generators.
+- **Checkpoint selection:** the best epoch is chosen by validation AUC.
+- **Calibration:** a temperature is fitted on a 50/50 validation slice and folded into the final layer, so P(fake) is calibrated at no runtime cost.
+
+**Evaluation** (held-out people, compared against the third-party baseline on identical crops)
+- **Headline metrics:** AUC with a 95% CI from a person-level bootstrap, EER, the detection rate at 1% and 5% false-positive rates, and balanced accuracy.
+- **Calibration:** ECE and reliability diagrams, before and after temperature scaling.
+- **Per-generator AUC:** inpainting, face swap and text-to-image reported separately.
+- **Robustness:** AUC under JPEG q90/70/50/30, ×0.5 and ×0.25 downscaling, and Gaussian blur.
+- **Unseen generators:** three extra models are trained, each with one generator left out, then tested on that generator.
+- **Cross-dataset:** frame-level and video-level AUC on SDFVD face-swap videos.
+
+```bash
+pip install -r requirements-dev.txt
+python -m training.run all --data /tmp/ethicura --out results              # full run (GPU recommended)
+python -m training.run all --data /tmp/ethicura --out results --limit 50   # quick smoke test
+```
+
+---
+
 ## ‣ Project Structure:
 
 ```
