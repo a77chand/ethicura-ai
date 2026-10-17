@@ -38,6 +38,7 @@ DFF_SOURCES = ["wiki", "inpainting", "insight", "text2img"]  # wiki = real photo
 FAKE_SOURCES = DFF_SOURCES[1:]
 SPLITS = ["train", "val", "test"]
 MIN_FACE_PX = 80
+EVAL_BATCH = 64
 BASELINE_REPO = "ariyul/deepfake-detection-cnn_v2"
 RUNS = {"main": None, **{f"logo-{s}": s for s in FAKE_SOURCES}}
 
@@ -88,6 +89,14 @@ def _worker_init():
     # Face cropping is CPU work; keep worker processes off the GPU.
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
     os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+    os.environ["OMP_NUM_THREADS"] = "1"
+    # One TF thread per worker: the pool already uses every core, and N
+    # workers each spawning N intra-op threads just fight over them.
+    import tensorflow as tf
+    tf.config.threading.set_intra_op_parallelism_threads(1)
+    tf.config.threading.set_inter_op_parallelism_threads(1)
+    import cv2
+    cv2.setNumThreads(1)
     global _CROPPER
     from mtcnn import MTCNN
     from src.detector import EthicuraDetector
@@ -123,11 +132,10 @@ def _example(face_rgb, label, source, group, name, face_px):
 
 
 def _crop_dff_chunk(args):
-    data, names, shard = args
+    data, crops, names, shard = args
     import cv2
     import tensorflow as tf
 
-    crops = f"{data}/crops"
     writers = {s: tf.io.TFRecordWriter(f"{crops}/{s}/dff-{shard:04d}.tfrecord.tmp") for s in SPLITS}
     rows = []
     for name in names:
@@ -161,7 +169,7 @@ def _crop_dff_chunk(args):
 
 
 def _crop_sdfvd_video(args):
-    data, path, frames_per_video = args
+    crops, path, frames_per_video = args
     import cv2
     import numpy as np
     import tensorflow as tf
@@ -172,7 +180,7 @@ def _crop_sdfvd_video(args):
     cap = cv2.VideoCapture(path)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     wanted = set(np.linspace(0, max(total - 1, 0), frames_per_video).astype(int).tolist())
-    out = f"{data}/crops/sdfvd/{'fake' if label else 'real'}-{video_id}.tfrecord"
+    out = f"{crops}/sdfvd/{'fake' if label else 'real'}-{video_id}.tfrecord"
     kept = 0
     with tf.io.TFRecordWriter(out) as writer:
         for idx in range(total):
@@ -189,13 +197,12 @@ def _crop_sdfvd_video(args):
              "frames_total": total, "faces_kept": kept}]
 
 
-def preprocess(data: str, out: str, workers: int, limit: int = 0, chunk: int = 250):
+def preprocess(data: str, crops: str, out: str, workers: int, limit: int = 0, chunk: int = 250):
     import collections
     import multiprocessing as mp
 
     import pandas as pd
 
-    crops = f"{data}/crops"
     manifest_path = f"{out}/manifest.csv"
     if os.path.exists(manifest_path) and not limit:
         log("[preprocess] manifest exists, skipping")
@@ -210,7 +217,7 @@ def preprocess(data: str, out: str, workers: int, limit: int = 0, chunk: int = 2
     common = sorted(set.intersection(*(names(s) for s in DFF_SOURCES)))
     if limit:
         common = common[:limit]
-    jobs = [(data, common[i:i + chunk], i // chunk) for i in range(0, len(common), chunk)]
+    jobs = [(data, crops, common[i:i + chunk], i // chunk) for i in range(0, len(common), chunk)]
     videos = sorted(f"{data}/sdfvd/{c}/{f}" for c in ["Real", "Fake"]
                     for f in os.listdir(f"{data}/sdfvd/{c}") if f.endswith(".mp4"))
     if limit:
@@ -223,7 +230,7 @@ def preprocess(data: str, out: str, workers: int, limit: int = 0, chunk: int = 2
             rows += r
             if n % 10 == 0 or n == len(jobs):
                 log(f"[preprocess] DFF chunks {n}/{len(jobs)}")
-        for r in pool.imap_unordered(_crop_sdfvd_video, [(data, v, 16) for v in videos]):
+        for r in pool.imap_unordered(_crop_sdfvd_video, [(crops, v, 16) for v in videos]):
             rows += r
     os.makedirs(out, exist_ok=True)
     df = pd.DataFrame(rows)
@@ -255,13 +262,13 @@ def predict(model, dataset):
     return {k: np.concatenate(v) for k, v in out.items()}
 
 
-def shards(data: str, split: str) -> list[str]:
+def shards(crops: str, split: str) -> list[str]:
     import glob
 
-    return sorted(glob.glob(f"{data}/crops/{split}/*.tfrecord"))
+    return sorted(glob.glob(f"{crops}/{split}/*.tfrecord"))
 
 
-def train(data: str, out: str, run_name: str, epochs: int, head_epochs: int = 1,
+def train(crops: str, out: str, run_name: str, epochs: int, head_epochs: int = 1,
           batch_size: int = 64, lr: float = 1e-4, min_face_px: int = MIN_FACE_PX, seed: int = 0):
     """Fine-tune EfficientNetB0. logo-<generator> runs leave that generator's
     fakes out of train *and* val, to test generalisation to it."""
@@ -280,11 +287,16 @@ def train(data: str, out: str, run_name: str, epochs: int, head_epochs: int = 1,
     started = time.time()
     keras.utils.set_random_seed(seed)
     gpus = tf.config.list_physical_devices("GPU")
+    for gpu in gpus:
+        try:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        except RuntimeError:
+            pass  # already initialised by an earlier run in this process
     log(f"[train:{run_name}] GPUs: {gpus}")
 
     exclude = RUNS[run_name]
     fake_sources = [s for s in FAKE_SOURCES if s != exclude]
-    train_files, val_files = shards(data, "train"), shards(data, "val")
+    train_files, val_files = shards(crops, "train"), shards(crops, "val")
     n_real = int(tdata.records(train_files, min_face_px, ["wiki"]).reduce(0, lambda n, _: n + 1))
     steps = 2 * n_real // batch_size
     log(f"[train:{run_name}] fakes={fake_sources} train reals={n_real} steps/epoch={steps}")
@@ -293,7 +305,7 @@ def train(data: str, out: str, run_name: str, epochs: int, head_epochs: int = 1,
         keras.mixed_precision.set_global_policy("mixed_float16")
     model, backbone = build_model()
     train_ds = tdata.training_dataset(train_files, batch_size, fake_sources, min_face_px, seed)
-    val_eval = tdata.eval_dataset(val_files, 256, min_face_px, ["wiki"] + fake_sources)
+    val_eval = tdata.eval_dataset(val_files, EVAL_BATCH, min_face_px, ["wiki"] + fake_sources)
     val_ds = val_eval.map(lambda x, y, *_: (x, y))
     auc = lambda: keras.metrics.AUC(name="auc")
 
@@ -312,7 +324,14 @@ def train(data: str, out: str, run_name: str, epochs: int, head_epochs: int = 1,
         callbacks=[keras.callbacks.ModelCheckpoint(best, monitor="val_auc", mode="max",
                                                    save_best_only=True, save_weights_only=True)])
     model.load_weights(best)
-    model = to_float32(model)
+    trained = model
+    keras.mixed_precision.set_global_policy("float32")
+    model = to_float32(trained)
+    # Free the mixed-precision training copy (and its optimizer state)
+    # before running inference — holding both ran a T4 out of memory.
+    del trained, train_ds
+    import gc
+    gc.collect()
 
     # Calibrate on a class-balanced slice of validation, fold T into the last layer.
     val = predict(model, val_eval)
@@ -353,7 +372,7 @@ def load_baseline():
     return keras.saving.load_model(f"{path}/keras_model/best_model.keras", compile=False)
 
 
-def evaluate(data: str, out: str, min_face_px: int = MIN_FACE_PX):
+def evaluate(crops: str, out: str, min_face_px: int = MIN_FACE_PX):
     """Held-out comparison of the trained model and the third-party baseline:
     overall, per generator, under degradation, on unseen generators, and on
     face-swap videos from a different dataset."""
@@ -363,14 +382,14 @@ def evaluate(data: str, out: str, min_face_px: int = MIN_FACE_PX):
     from training import data as tdata
     from training.metrics import balanced_indices, bootstrap_auc_ci, reliability, summary
 
-    test_files, sdfvd_files = shards(data, "test"), shards(data, "sdfvd")
+    test_files, sdfvd_files = shards(crops, "test"), shards(crops, "sdfvd")
     models = {"ethicura": keras.saving.load_model(f"{out}/models/main/model.keras", compile=False),
               "baseline": load_baseline()}
     results = {"min_face_px": min_face_px, "models": {}}
     curves = {}
 
     def run(model, files, transform=None, sources=None, min_px=min_face_px):
-        return predict(model, tdata.eval_dataset(files, 256, min_px, sources, transform))
+        return predict(model, tdata.eval_dataset(files, EVAL_BATCH, min_px, sources, transform))
 
     def decode(a):
         return np.char.decode(a.astype(bytes))
@@ -484,7 +503,8 @@ def render_figures(results, curves, out: str):
 def main():
     parser = argparse.ArgumentParser(description="Train/evaluate Ethicura's detector.")
     parser.add_argument("step", choices=["download", "preprocess", "train", "evaluate", "all"])
-    parser.add_argument("--data", default="/tmp/ethicura", help="datasets + face crops")
+    parser.add_argument("--data", default="/tmp/ethicura", help="downloaded datasets")
+    parser.add_argument("--crops", help="face-crop TFRecords (default: <data>/crops)")
     parser.add_argument("--out", default="results", help="models, metrics, figures")
     parser.add_argument("--workers", type=int, default=os.cpu_count() or 2)
     parser.add_argument("--limit", type=int, default=0, help="smoke test: first N DFF pairs only")
@@ -493,16 +513,17 @@ def main():
     parser.add_argument("--runs", nargs="+", default=list(RUNS), choices=list(RUNS))
     args = parser.parse_args()
     os.makedirs(args.out, exist_ok=True)
+    crops = args.crops or f"{args.data}/crops"
 
     if args.step in ("download", "all"):
         download(args.data)
     if args.step in ("preprocess", "all"):
-        preprocess(args.data, args.out, args.workers, args.limit)
+        preprocess(args.data, crops, args.out, args.workers, args.limit)
     if args.step in ("train", "all"):
         for run_name in args.runs:
-            train(args.data, args.out, run_name, args.epochs, batch_size=args.batch_size)
+            train(crops, args.out, run_name, args.epochs, batch_size=args.batch_size)
     if args.step in ("evaluate", "all"):
-        evaluate(args.data, args.out)
+        evaluate(crops, args.out)
 
 
 if __name__ == "__main__":

@@ -1,13 +1,12 @@
 {
-  "id": "a77chand/ethicura-detector-training",
-  "title": "Ethicura detector training",
-  "code_file": "train_kernel.py",
+  "id": "a77chand/ethicura-face-crops",
+  "title": "Ethicura face crops",
+  "code_file": "crops_kernel.py",
   "language": "python",
   "kernel_type": "script",
   "is_private": true,
-  "enable_gpu": true,
+  "enable_gpu": false,
   "enable_internet": true,
-  "machine_shape": "NvidiaTeslaT4",
   "dataset_sources": [],
   "competition_sources": [],
   "kernel_sources": []
