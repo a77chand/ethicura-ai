@@ -116,7 +116,7 @@ def render(out_dir: str) -> str:
             f"Training: {m['train_reals']:,} real faces per epoch against the same number of fakes, "
             f"best epoch {m['best_epoch']} of {m['config']['epochs']}, {m['train_minutes']} min on "
             f"{'a GPU' if m['config'].get('mixed_precision') else 'CPU'}. Calibration temperature T = {m['temperature']:.2f}, which brought validation "
-            f"ECE from {cal['uncalibrated']['ece']:.3f} to {cal['calibrated']['ece']:.3f}.",
+            f"ECE from {cal['before']['ece']:.3f} to {cal['calibrated']['ece']:.3f}.",
         ]
     return "\n".join(lines) + "\n"
 

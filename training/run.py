@@ -333,13 +333,6 @@ def train(crops: str, out: str, run_name: str, epochs: int, head_epochs: int = 1
     import gc
     gc.collect()
 
-    # Calibrate on a class-balanced slice of validation, fold T into the last layer.
-    val = predict(model, val_eval)
-    idx = balanced_indices(val["label"], seed)
-    temperature = fit_temperature(val["prob"][idx], val["label"][idx])
-    fold_temperature(model, temperature)
-    calibrated = 1 / (1 + np.exp(-logit(val["prob"]) / temperature))
-
     os.makedirs(out_dir, exist_ok=True)
     model.save(f"{out_dir}/model.keras")
     meta = {
@@ -347,9 +340,7 @@ def train(crops: str, out: str, run_name: str, epochs: int, head_epochs: int = 1
         "config": {"epochs": epochs, "head_epochs": head_epochs, "batch_size": batch_size, "lr": lr,
                    "min_face_px": min_face_px, "seed": seed, "backbone": "EfficientNetB0 (ImageNet)",
                    "input": "224x224 RGB in [0,1]", "mixed_precision": bool(gpus)},
-        "train_reals": n_real, "steps_per_epoch": steps, "temperature": temperature,
-        "val_balanced": {"uncalibrated": summary(val["label"][idx], val["prob"][idx]),
-                         "calibrated": summary(val["label"][idx], calibrated[idx])},
+        "train_reals": n_real, "steps_per_epoch": steps, "temperature": 1.0,
         "history": {k: [float(v) for v in vs] for k, vs in history.history.items()},
         "best_epoch": int(np.argmax(history.history["val_auc"])) + 1,
         "train_minutes": round((time.time() - started) / 60, 1),
@@ -357,19 +348,61 @@ def train(crops: str, out: str, run_name: str, epochs: int, head_epochs: int = 1
     with open(f"{out_dir}/meta.json", "w") as f:
         json.dump(meta, f, indent=2)
     keras.mixed_precision.set_global_policy("float32")
-    cal = meta["val_balanced"]["calibrated"]
-    log(f"[train:{run_name}] best epoch {meta['best_epoch']}, T={temperature:.3f}, val AUC {cal['auc']:.4f}, "
-        f"EER {cal['eer']:.4f}, ECE {cal['ece']:.4f} ({meta['train_minutes']} min)")
+    log(f"[train:{run_name}] best epoch {meta['best_epoch']}, "
+        f"val AUC {max(meta['history']['val_auc']):.4f} ({meta['train_minutes']} min)")
+    calibrate(crops, out, run_name, min_face_px, seed)
+
+
+def calibrate(crops: str, out: str, run_name: str, min_face_px: int = MIN_FACE_PX, seed: int = 0):
+    """Fit a temperature on a class-balanced slice of validation and fold it
+    into the last layer. Reloads the model from disk so calibration is fitted
+    to exactly the artifact that ships (an in-memory pass inside training once
+    disagreed with the saved file). Re-running refines rather than compounds:
+    the stored temperature is the cumulative one."""
+    import keras
+    import numpy as np
+
+    from training import data as tdata
+    from training.metrics import balanced_indices, summary
+    from training.model import fit_temperature, fold_temperature, logit
+
+    out_dir = f"{out}/models/{run_name}"
+    with open(f"{out_dir}/meta.json") as f:
+        meta = json.load(f)
+    model = keras.saving.load_model(f"{out_dir}/model.keras", compile=False)
+    val = predict(model, tdata.eval_dataset(shards(crops, "val"), EVAL_BATCH, min_face_px,
+                                            ["wiki"] + meta["fake_sources"]))
+    idx = balanced_indices(val["label"], seed)
+    y, p = val["label"][idx].astype(int), val["prob"][idx]
+    t = fit_temperature(p, y)
+    fold_temperature(model, t)
+    model.save(f"{out_dir}/model.keras")
+
+    meta["temperature"] = meta.get("temperature", 1.0) * t
+    meta["val_balanced"] = {"before": summary(y, p), "calibrated": summary(y, 1 / (1 + np.exp(-logit(p) / t)))}
+    with open(f"{out_dir}/meta.json", "w") as f:
+        json.dump(meta, f, indent=2)
+    cal = meta["val_balanced"]
+    log(f"[calibrate:{run_name}] T={meta['temperature']:.3f}, val AUC {cal['calibrated']['auc']:.4f}, "
+        f"ECE {cal['before']['ece']:.4f} -> {cal['calibrated']['ece']:.4f}")
 
 
 # ── Evaluation ────────────────────────────────────────────────────────────────
 
 def load_baseline():
+    """The third-party model, fed the input it actually works with.
+
+    Its model card (and this repo's original API) divide pixels by 255, but
+    Keras' EfficientNet already rescales internally, so [0, 1] input gets
+    squashed twice and the model outputs ~0.497 for every face. Wrapping it
+    with ×255 gives it 0-255 pixels, which is the fair comparison."""
     import keras
     from huggingface_hub import snapshot_download
 
     path = snapshot_download(BASELINE_REPO)
-    return keras.saving.load_model(f"{path}/keras_model/best_model.keras", compile=False)
+    inner = keras.saving.load_model(f"{path}/keras_model/best_model.keras", compile=False)
+    inputs = keras.Input((224, 224, 3))
+    return keras.Model(inputs, inner(keras.layers.Rescaling(255.0)(inputs)), name="baseline_0_255")
 
 
 def evaluate(crops: str, out: str, min_face_px: int = MIN_FACE_PX):
@@ -502,7 +535,7 @@ def render_figures(results, curves, out: str):
 
 def main():
     parser = argparse.ArgumentParser(description="Train/evaluate Ethicura's detector.")
-    parser.add_argument("step", choices=["download", "preprocess", "train", "evaluate", "all"])
+    parser.add_argument("step", choices=["download", "preprocess", "train", "calibrate", "evaluate", "all"])
     parser.add_argument("--data", default="/tmp/ethicura", help="downloaded datasets")
     parser.add_argument("--crops", help="face-crop TFRecords (default: <data>/crops)")
     parser.add_argument("--out", default="results", help="models, metrics, figures")
@@ -522,6 +555,9 @@ def main():
     if args.step in ("train", "all"):
         for run_name in args.runs:
             train(crops, args.out, run_name, args.epochs, batch_size=args.batch_size)
+    if args.step == "calibrate":
+        for run_name in args.runs:
+            calibrate(crops, args.out, run_name)
     if args.step in ("evaluate", "all"):
         evaluate(crops, args.out)
 
