@@ -1,5 +1,7 @@
 # ‣ Ethicura AI — Unified DeepFake Detection Framework (UDDF)
 
+[![tests](https://github.com/a77chand/ethicura-ai/actions/workflows/tests.yml/badge.svg)](https://github.com/a77chand/ethicura-ai/actions/workflows/tests.yml) [![live demo](https://img.shields.io/badge/demo-live-brightgreen)](https://ethicura-frontend.vercel.app)
+
 > *Empowering digital trust through real-time, interpretable deepfake detection.*
 
 ![Project Summary](assets/summary.png)
