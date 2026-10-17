@@ -19,8 +19,8 @@
 - **Same preprocessing.** The browser resizes face crops with a JavaScript port of OpenCV's bilinear resize, the one used in training. The canvas's own smoothing filter shifted predictions noticeably.
 - **Crop parity.** The model was trained on MTCNN face crops, but the browser uses BlazeFace. A small ridge regression from BlazeFace's six landmarks maps its box onto MTCNN's (median crop overlap 0.92 with the API's crop over 73 frames).
 - **Verified end to end** on those 73 frames:
-  - **Identical crops:** browser and Python fake probabilities differ by a median of **0.003** (max 0.06), and all 73 labels match.
-  - **The browser's own face detector:** the median difference is 0.03, and 70 of 73 single-frame labels match. The gap comes from the two detectors boxing the face slightly differently; the live verdict averages 8 frames, which smooths it further.
+  - **Identical crops:** browser and Python fake probabilities differ by a median of **0.005** (max 0.06), and 72 of 73 labels match. The one mismatch sits right at the 50% line.
+  - **The browser's own face detector:** the median difference is 0.07, and **66 of 73** single-frame labels match. The gap is crop sensitivity: the two detectors box turned heads differently, and the calibrated model is sharp enough for that to swing some scores. The live verdict averages 8 frames, which damps it. Calibrating the browser pipeline on its own crops is the next step.
   - **Correction to an earlier version of this README:** it reported a 0.0004 maximum difference. That was measured against the old third-party model, which outputs about 0.497 for every face, so any crop agreed.
 
 ## ‣ Demo Video:
@@ -47,10 +47,7 @@ We built Ethicura AI to give people a proactive, interpretable tool to verify co
 - Supports **live webcam analysis in the browser**: a React frontend runs face tracking and an ONNX export of the classifier on-device (WebGPU), with no server and no upload
 - Provides **real-time confidence scores** (fake probability 0–100%)
 - Generates **Grad-CAM visualisations** to highlight the exact facial regions that triggered the detection — making the model's decision transparent and auditable
-- Identifies three types of manipulation:
-  - Subtle facial distortions (images)
-  - Spatial inconsistencies (videos)
-  - Unnatural frame transitions (video sequences)
+- Is trained and tested on three kinds of fake face: **diffusion inpainting, face swap and fully generated (text-to-image) faces**. It scores frame by frame; videos are averaged over frames, with no temporal model
 
 ---
 
@@ -141,7 +138,7 @@ Training: 15,296 real faces per epoch against the same number of fakes, best epo
 - **Calibrated:** when it says 80% fake, about 80% of such faces are fake (ECE 0.011 on a balanced test set). That matters because the demo shows the percentage, not just a label.
 - **Robust to degraded input:** AUC stays at 0.968 or above down to JPEG quality 30, and above 0.91 under ×0.25 downscaling or heavy blur.
 - **Face swaps are the hardest to generalise to.** A model that never saw InsightFace swaps scores only 0.765 on them, against about 0.94 for the unseen diffusion generators. Swap artefacts are evidently different enough from diffusion ones that training on one doesn't cover the other.
-- **Out of domain, it's a weak detector.** On SDFVD (commercial face-swap videos, a different dataset entirely), video-level AUC is about 0.62. The baseline's confidence interval overlaps it, so that's not a clear win. Like most detectors trained on one dataset, it shouldn't be trusted on manipulation types it wasn't trained on. This is why the live demo labels its output a *warning*, not a verdict.
+- **Out of domain, it's a weak detector.** On SDFVD (commercial face-swap videos, a different dataset entirely), video-level AUC is about 0.63. The baseline's confidence interval overlaps it, so that's not a clear win. Like most detectors trained on one dataset, it shouldn't be trusted on manipulation types it wasn't trained on. This is why the live demo labels its output a *warning*, not a verdict.
 
 Full numbers are in [`results/results.json`](results/results.json), with per-run training metadata in `results/models/`. The tables above are generated from those files by `python -m training.report results --readme README.md`.
 
@@ -223,7 +220,7 @@ ethicura-ai/
 │   ├── api_3.mp4            # Demo video
 │   └── eval/                # ROC, calibration and robustness charts
 ├── docs/
-│   └── model_card.md        # Model card (bias, limitations, intended use)
+│   └── model_card.md        # Model card for the shipped detector (data, metrics, limitations)
 ├── training/
 │   ├── export_web.py        # Keras → ONNX (prob + CAM) for the in-browser demo, with parity checks
 │   ├── run.py               # Train + evaluate an in-house model (download → crops → train → evaluate)
@@ -343,9 +340,10 @@ XLA JIT is disabled in `src/api.py` because its first-call compile stalled for m
 ## ‣ Ethics & Responsible AI:
 
 Ethicura AI was built with responsible deployment in mind:
-- Grad-CAM explanations ensure decisions are **interpretable**, not black-box
+- Grad-CAM explanations make decisions **interpretable**, not black-box
 - Intended as a **warning tool**, not a definitive judge — users retain agency
-- Does not store uploaded content
-- See [`docs/model_card.md`](docs/model_card.md) for the bias analysis and limitations of the original XceptionNet model
+- The live demo processes video **on-device**, with nothing uploaded; the API doesn't store uploaded content
+- **No subgroup (demographic) evaluation yet:** the dataset has no reliable demographic labels, so equal performance across groups isn't established
+- See the [model card](docs/model_card.md) for intended use, limitations and bias considerations
 
 --- 
