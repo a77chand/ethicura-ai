@@ -354,17 +354,18 @@ def train(crops: str, out: str, run_name: str, epochs: int, head_epochs: int = 1
 
 
 def calibrate(crops: str, out: str, run_name: str, min_face_px: int = MIN_FACE_PX, seed: int = 0):
-    """Fit a temperature on a class-balanced slice of validation and fold it
-    into the last layer. Reloads the model from disk so calibration is fitted
-    to exactly the artifact that ships (an in-memory pass inside training once
-    disagreed with the saved file). Re-running refines rather than compounds:
-    the stored temperature is the cumulative one."""
+    """Platt-scale P(fake) on a class-balanced slice of validation and fold
+    it into the last layer. Reloads the model from disk so calibration is
+    fitted to exactly the artifact that ships (an in-memory pass inside
+    training once disagreed with the saved file). Re-running refines rather
+    than compounds: meta.json stores the cumulative (a, b) relative to the
+    raw trained logits."""
     import keras
     import numpy as np
 
     from training import data as tdata
     from training.metrics import balanced_indices, summary
-    from training.model import fit_temperature, fold_temperature, logit
+    from training.model import fit_platt, fold_platt, logit
 
     out_dir = f"{out}/models/{run_name}"
     with open(f"{out_dir}/meta.json") as f:
@@ -374,16 +375,20 @@ def calibrate(crops: str, out: str, run_name: str, min_face_px: int = MIN_FACE_P
                                             ["wiki"] + meta["fake_sources"]))
     idx = balanced_indices(val["label"], seed)
     y, p = val["label"][idx].astype(int), val["prob"][idx]
-    t = fit_temperature(p, y)
-    fold_temperature(model, t)
+    a, b = fit_platt(p, y)
+    fold_platt(model, a, b)
     model.save(f"{out_dir}/model.keras")
 
-    meta["temperature"] = meta.get("temperature", 1.0) * t
-    meta["val_balanced"] = {"before": summary(y, p), "calibrated": summary(y, 1 / (1 + np.exp(-logit(p) / t)))}
+    # Compose with whatever was folded in before (older runs: a temperature).
+    prev = meta.get("calibration") or {"a": 1.0 / meta.get("temperature", 1.0), "b": 0.0}
+    meta["calibration"] = {"method": "platt", "a": a * prev["a"], "b": a * prev["b"] + b}
+    meta.pop("temperature", None)
+    meta["val_balanced"] = {"before": summary(y, p), "calibrated": summary(y, 1 / (1 + np.exp(-(a * logit(p) + b))))}
     with open(f"{out_dir}/meta.json", "w") as f:
         json.dump(meta, f, indent=2)
     cal = meta["val_balanced"]
-    log(f"[calibrate:{run_name}] T={meta['temperature']:.3f}, val AUC {cal['calibrated']['auc']:.4f}, "
+    c = meta["calibration"]
+    log(f"[calibrate:{run_name}] a={c['a']:.3f} b={c['b']:.3f}, val AUC {cal['calibrated']['auc']:.4f}, "
         f"ECE {cal['before']['ece']:.4f} -> {cal['calibrated']['ece']:.4f}")
 
 
@@ -405,10 +410,19 @@ def load_baseline():
     return keras.Model(inputs, inner(keras.layers.Rescaling(255.0)(inputs)), name="baseline_0_255")
 
 
-def evaluate(crops: str, out: str, min_face_px: int = MIN_FACE_PX):
+THRESHOLD_FREE = ("n", "n_real", "n_fake", "auc", "auc_ci95", "eer", "tpr_at_fpr_1pct", "tpr_at_fpr_5pct")
+
+
+def evaluate(crops: str, out: str, min_face_px: int = MIN_FACE_PX, quick: bool = False):
     """Held-out comparison of the trained model and the third-party baseline:
     overall, per generator, under degradation, on unseen generators, and on
-    face-swap videos from a different dataset."""
+    face-swap videos from a different dataset.
+
+    quick=True (after re-calibrating) recomputes the clean-test and SDFVD
+    sections and keeps the expensive robustness / unseen-generator sections
+    from the last full run. Calibration is a monotonic transform, so their
+    ranking metrics (AUC, EER, TPR@FPR) are unchanged; their threshold-based
+    metrics are dropped rather than left stale."""
     import keras
     import numpy as np
 
@@ -418,6 +432,10 @@ def evaluate(crops: str, out: str, min_face_px: int = MIN_FACE_PX):
     test_files, sdfvd_files = shards(crops, "test"), shards(crops, "sdfvd")
     models = {"ethicura": keras.saving.load_model(f"{out}/models/main/model.keras", compile=False),
               "baseline": load_baseline()}
+    previous = None
+    if quick:
+        with open(f"{out}/results.json") as f:
+            previous = json.load(f)
     results = {"min_face_px": min_face_px, "models": {}}
     curves = {}
 
@@ -446,9 +464,13 @@ def evaluate(crops: str, out: str, min_face_px: int = MIN_FACE_PX):
                                      "auc_ci95": bootstrap_auc_ci(y[m], p[m], g[m], n_boot=500)}
 
         r["robustness"] = {}
-        for pname, fn in tdata.PERTURBATIONS.items():
-            pr = run(model, test_files, fn)
-            r["robustness"][pname] = summary(pr["label"].astype(int), pr["prob"])
+        if previous:
+            for pname, entry in previous["models"][name]["robustness"].items():
+                r["robustness"][pname] = {k: v for k, v in entry.items() if k in THRESHOLD_FREE}
+        else:
+            for pname, fn in tdata.PERTURBATIONS.items():
+                pr = run(model, test_files, fn)
+                r["robustness"][pname] = summary(pr["label"].astype(int), pr["prob"])
 
         sd = run(model, sdfvd_files, min_px=0)
         sy, sp, sg = sd["label"].astype(int), sd["prob"], decode(sd["group"])
@@ -465,7 +487,11 @@ def evaluate(crops: str, out: str, min_face_px: int = MIN_FACE_PX):
             f"SDFVD video AUC {r['sdfvd_video']['auc']:.4f}")
 
     results["leave_one_generator_out"] = {}
-    for s in FAKE_SOURCES:
+    if previous:
+        results["leave_one_generator_out"] = {
+            gen: {tag: {k: v for k, v in m.items() if k in THRESHOLD_FREE} for tag, m in entry.items()}
+            for gen, entry in previous.get("leave_one_generator_out", {}).items()}
+    for s in ([] if previous else FAKE_SOURCES):
         path = f"{out}/models/logo-{s}/model.keras"
         if not os.path.exists(path):
             continue
@@ -544,6 +570,8 @@ def main():
     parser.add_argument("--epochs", type=int, default=8)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--runs", nargs="+", default=list(RUNS), choices=list(RUNS))
+    parser.add_argument("--quick", action="store_true",
+                        help="evaluate: refresh clean-test/SDFVD sections, keep robustness/LOGO AUCs")
     args = parser.parse_args()
     os.makedirs(args.out, exist_ok=True)
     crops = args.crops or f"{args.data}/crops"
@@ -559,7 +587,7 @@ def main():
         for run_name in args.runs:
             calibrate(crops, args.out, run_name)
     if args.step in ("evaluate", "all"):
-        evaluate(crops, args.out)
+        evaluate(crops, args.out, quick=args.quick)
 
 
 if __name__ == "__main__":

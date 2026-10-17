@@ -69,6 +69,36 @@ def fit_temperature(probs: np.ndarray, labels: np.ndarray) -> float:
     return float(np.exp((lo + hi) / 2))
 
 
+def fit_platt(probs: np.ndarray, labels: np.ndarray) -> tuple[float, float]:
+    """Platt scaling: (a, b) minimising NLL of sigmoid(a·logit + b).
+
+    Temperature scaling (a = 1/T, b = 0) can only sharpen or soften scores;
+    when a model is systematically under-confident on one class it also
+    needs a shift, which b provides."""
+    z = logit(probs)
+    y = labels.astype(np.float64)
+    a, b = 1.0, 0.0
+    for _ in range(100):  # Newton's method; the NLL is convex in (a, b)
+        q = 1.0 / (1.0 + np.exp(-(a * z + b)))
+        grad = np.array([np.sum((q - y) * z), np.sum(q - y)])
+        w = q * (1 - q)
+        hess = np.array([[np.sum(w * z * z), np.sum(w * z)], [np.sum(w * z), np.sum(w)]])
+        step = np.linalg.solve(hess + 1e-9 * np.eye(2), grad)
+        a, b = a - step[0], b - step[1]
+        if np.abs(step).max() < 1e-10:
+            break
+    return float(a), float(b)
+
+
+def fold_platt(model, a: float, b: float):
+    """sigmoid(a·(w·x + c) + b) == sigmoid((a·w)·x + (a·c + b)): bake Platt
+    scaling into the last layer, like fold_temperature."""
+    dense = model.get_layer("fake_prob")
+    kernel, bias = dense.get_weights()
+    dense.set_weights([kernel * a, bias * a + b])
+    return model
+
+
 def fold_temperature(model, temperature: float):
     """sigmoid((w·x + b) / T) == sigmoid((w/T)·x + b/T): bake calibration
     into the last layer so serving needs no extra code."""

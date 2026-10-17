@@ -11,13 +11,17 @@
 **[ethicura-frontend.vercel.app](https://ethicura-frontend.vercel.app)**: live webcam deepfake analysis with a heatmap overlay. It runs **entirely in your browser**, and your video never leaves the device:
 
 - **Face tracking:** MediaPipe BlazeFace finds the face on every video frame.
-- **Classifier:** an ONNX export of the classifier runs on your GPU through WebGPU, falling back to WebAssembly.
+- **Classifier:** an ONNX export of Ethicura's **own trained detector** (AUC 0.986 on people it never saw; see [Results](#-results)) runs on your GPU through WebGPU, falling back to WebAssembly.
 - **Speed:** about 30 analyses per second at about 20 ms each on a laptop, with no server and no network round trip.
 
 ### How the browser version matches the Python API
 - **Heatmap without a backward pass.** The classifier head is global-average-pool → dropout → dense(sigmoid), so Grad-CAM's channel weights reduce to a positive scalar times the dense weights. After ReLU and normalisation, Grad-CAM equals classic CAM, `ReLU(Σₖ wₖ Aₖ) / max`. The exported graph computes that directly. [`training/export_web.py`](training/export_web.py) checks the result against `src/gradcam.py` numerically before it writes the model.
-- **Crop parity.** The model was trained on MTCNN face crops, but the browser uses BlazeFace. Over 73 face frames, BlazeFace boxes are mapped onto MTCNN's with a calibrated offset and scale (median IoU 0.91 with the API's crop).
-- **Verified end to end.** On those frames, the browser's fake probability differs from the Python API's by **at most 0.0004**, and every frame gets the same REAL/FAKE label.
+- **Same preprocessing.** The browser resizes face crops with a JavaScript port of OpenCV's bilinear resize, the one used in training. The canvas's own smoothing filter shifted predictions noticeably.
+- **Crop parity.** The model was trained on MTCNN face crops, but the browser uses BlazeFace. A small ridge regression from BlazeFace's six landmarks maps its box onto MTCNN's (median crop overlap 0.92 with the API's crop over 73 frames).
+- **Verified end to end** on those 73 frames:
+  - **Identical crops:** browser and Python fake probabilities differ by a median of **0.003** (max 0.06), and all 73 labels match.
+  - **The browser's own face detector:** the median difference is 0.03, and 70 of 73 single-frame labels match. The gap comes from the two detectors boxing the face slightly differently; the live verdict averages 8 frames, which smooths it further.
+  - **Correction to an earlier version of this README:** it reported a 0.0004 maximum difference. That was measured against the old third-party model, which outputs about 0.497 for every face, so any crop agreed.
 
 ## ‣ Demo Video:
 
@@ -39,7 +43,7 @@ We built Ethicura AI to give people a proactive, interpretable tool to verify co
 
 **Ethicura AI** is an end-to-end deepfake detection API and interface that:
 
-- Detects manipulated **images and videos** using a pretrained **EfficientNetB0** classifier ([`ariyul/deepfake-detection-cnn_v2`](https://huggingface.co/ariyul/deepfake-detection-cnn_v2) on Hugging Face) and **MTCNN** for face extraction
+- Detects manipulated **images and videos** with an **EfficientNetB0 trained in-house** on DeepFakeFace (AUC 0.986 on unseen people), using **MTCNN** for face extraction
 - Supports **live webcam analysis in the browser**: a React frontend runs face tracking and an ONNX export of the classifier on-device (WebGPU), with no server and no upload
 - Provides **real-time confidence scores** (fake probability 0–100%)
 - Generates **Grad-CAM visualisations** to highlight the exact facial regions that triggered the detection — making the model's decision transparent and auditable
@@ -64,7 +68,7 @@ Input (Image / Video)
         ▼
 ┌───────────────────┐
 │   EfficientNetB0  │  ← Deepfake classification
-│   Classifier      │     Pretrained (Hugging Face), 224×224 input
+│   Classifier      │     Trained in-house on DeepFakeFace, 224×224
 └───────────────────┘
         │
         ▼
@@ -79,11 +83,70 @@ Output: Confidence Score + Annotated Frame
 
 ---
 
-## ‣ Model Performance:
+## ‣ Results:
 
-> **Which model these numbers describe:** the results below are from the original research model, an XceptionNet fine-tuned on FaceForensics++. Its trained weights were never committed to this repo, so the current code and the live demo use a third-party pretrained EfficientNetB0 ([`ariyul/deepfake-detection-cnn_v2`](https://huggingface.co/ariyul/deepfake-detection-cnn_v2)). These benchmark figures don't apply to that model.
+Ethicura's detector was trained and evaluated with the leakage-controlled pipeline described [below](#-how-the-model-was-trained-and-evaluated). It's compared with the third-party pretrained model ([`ariyul/deepfake-detection-cnn_v2`](https://huggingface.co/ariyul/deepfake-detection-cnn_v2)) that the project used before, on identical face crops. That model has to be fed 0–255 pixels to work at all. Its model card says to divide by 255, but Keras' EfficientNet already does that internally, so it outputs about 0.497 for every face. The comparison below gives it the input it needs.
 
-The XceptionNet model was benchmarked against 10 leading deepfake detection models on FaceForensics++:
+<!-- results:start -->
+Test set: **1,838 real and 6,219 fake faces** from people never seen in training (faces ≥ 80 px). 95% CIs from a person-level bootstrap.
+
+| Metric | Ethicura (this work) | Third-party baseline |
+|---|---|---|
+| AUC (95% CI) | **0.986 (0.984–0.988)** | 0.483 (0.470–0.496) |
+| Equal error rate | **5.6%** | 51.3% |
+| Fakes caught at 1% false alarms | **82.7%** | 0.6% |
+| Fakes caught at 5% false alarms | **94.0%** | 3.9% |
+| Balanced accuracy @ 0.5 | **91.5%** | 48.6% |
+| Calibration error (ECE, balanced) | **0.076** | 0.084 |
+
+**Per generator** (real test faces vs. one generator's fakes):
+
+| Generator | Ethicura AUC | Baseline AUC |
+|---|---|---|
+| SD inpainting | **0.986 (0.983–0.988)** | 0.474 (0.462–0.486) |
+| InsightFace swap | **0.987 (0.983–0.990)** | 0.497 (0.477–0.515) |
+| SD text-to-image | **0.986 (0.983–0.988)** | 0.478 (0.461–0.496) |
+
+**Generalisation to an unseen generator.** Each row is a model trained *without* that generator, tested on it, next to the full model that did see it in training:
+
+| Held-out generator | AUC, never seen | AUC, seen in training | Same held-out model on the generators it saw |
+|---|---|---|---|
+| SD inpainting | 0.939 (0.933–0.946) | 0.986 (0.983–0.988) | 0.983 |
+| InsightFace swap | 0.765 (0.750–0.779) | 0.987 (0.983–0.990) | 0.993 |
+| SD text-to-image | 0.946 (0.939–0.952) | 0.986 (0.983–0.988) | 0.988 |
+
+**Robustness** (AUC with the degradation applied to every test face, real and fake):
+
+| Condition | clean | JPEG q90 | JPEG q70 | JPEG q50 | JPEG q30 | downscale ×0.5 | downscale ×0.25 | blur σ=1 | blur σ=2 |
+|---|---|---|---|---|---|---|---|---|---|
+| Ethicura | 0.986 | 0.982 | 0.980 | 0.976 | 0.968 | 0.959 | 0.913 | 0.969 | 0.913 |
+| Baseline | 0.483 | 0.497 | 0.501 | 0.505 | 0.515 | 0.512 | 0.511 | 0.503 | 0.523 |
+
+**Out of domain: SDFVD face-swap videos** (a different dataset and manipulation tool, never used for training or model selection):
+
+| | Ethicura | Baseline |
+|---|---|---|
+| Frame-level AUC | **0.618 (0.557–0.676)** | 0.584 (0.541–0.632) |
+| Video-level AUC (mean over frames, 106 videos) | **0.622 (0.552–0.690)** | 0.588 (0.539–0.643) |
+
+Training: 15,296 real faces per epoch against the same number of fakes, best epoch 8 of 8, 16.0 min on a GPU. Calibration: temperature scaling (T = 1.41) fitted on balanced validation (ECE 0.070) and folded into the final layer.
+<!-- results:end -->
+
+| ROC on held-out people | Calibration | Robustness |
+|---|---|---|
+| ![ROC](assets/eval/roc.png) | ![Calibration](assets/eval/calibration.png) | ![Robustness](assets/eval/robustness.png) |
+
+**What the numbers say**
+- **Strong in-distribution detection:** AUC 0.986 on people never seen in training. It catches 83% of fakes while flagging only 1% of real faces.
+- **Robust to degraded input:** AUC stays at 0.968 or above down to JPEG quality 30, and above 0.91 under ×0.25 downscaling or heavy blur.
+- **Face swaps are the hardest to generalise to.** A model that never saw InsightFace swaps scores only 0.765 on them, against about 0.94 for the unseen diffusion generators. Swap artefacts are evidently different enough from diffusion ones that training on one doesn't cover the other.
+- **Out of domain, it's a weak detector.** On SDFVD (commercial face-swap videos, a different dataset entirely), video-level AUC is about 0.62. The baseline's confidence interval overlaps it, so that's not a clear win. Like most detectors trained on one dataset, it shouldn't be trusted on manipulation types it wasn't trained on. This is why the live demo labels its output a *warning*, not a verdict.
+
+Full numbers are in [`results/results.json`](results/results.json), with per-run training metadata in `results/models/`. The tables above are generated from those files by `python -m training.report results --readme README.md`.
+
+### Historical: the original research model
+
+The project started with an XceptionNet fine-tuned on FaceForensics++. Its trained weights were never committed to this repo, so it can't be re-evaluated. These are the figures reported at the time:
 
 | Model | Accuracy (%) | Precision (%) | Recall (%) | F1-Score (%) | AUC-ROC |
 |-------|-------------|---------------|------------|--------------|---------|
@@ -99,13 +162,13 @@ The XceptionNet model was benchmarked against 10 leading deepfake detection mode
 | SeimSafer (EfficientNet) | 92 | 90 | 89 | 89.5 | 0.94 |
 | CNNDetection | 91 | 89 | 88 | 88.5 | 0.93 |
 
-**The XceptionNet model achieved the highest performance across all metrics.**
+*As reported originally; not reproducible from this repository.*
 
 ---
 
-## ‣ Training an In-House Model (in progress):
+## ‣ How the Model Was Trained and Evaluated:
 
-[`training/run.py`](training/run.py) trains and evaluates a replacement for the third-party model end to end. It runs on a free Kaggle T4 GPU through [`training/kaggle/`](training/kaggle/). Results will be added here once the run completes. Until then, no performance claims are made for it.
+[`training/run.py`](training/run.py) runs the whole pipeline end to end. [`training/kaggle/`](training/kaggle/) runs it on free Kaggle compute: a CPU job builds the face crops once, and a GPU job trains from them.
 
 **Data**
 - **[DeepFakeFace](https://huggingface.co/datasets/OpenRL/DeepFakeFace)** (OpenRAIL): 30k real IMDB-WIKI photos. Each has one fake from each of three generators: Stable Diffusion inpainting, InsightFace face swap and Stable Diffusion text-to-image.
@@ -126,11 +189,11 @@ A model can score well by learning these cues and then fail on real webcam input
 - **Schedule:** the head is trained first on the frozen backbone, then the whole network is fine-tuned with AdamW and cosine decay.
 - **Batches are class-balanced,** with the fakes split evenly across the generators.
 - **Checkpoint selection:** the best epoch is chosen by validation AUC.
-- **Calibration:** a temperature is fitted on a 50/50 validation slice and folded into the final layer, so P(fake) is calibrated at no runtime cost.
+- **Calibration:** Platt scaling (a scale and a shift of the logit) is fitted on a 50/50 validation slice and folded into the final layer, so P(fake) is calibrated at no runtime cost. Temperature scaling alone couldn't fix the model's under-confidence on fakes. Calibration runs as a separate step on the saved model file, so it always matches the file that ships.
 
 **Evaluation** (held-out people, compared against the third-party baseline on identical crops)
 - **Headline metrics:** AUC with a 95% CI from a person-level bootstrap, EER, the detection rate at 1% and 5% false-positive rates, and balanced accuracy.
-- **Calibration:** ECE and reliability diagrams, before and after temperature scaling.
+- **Calibration:** ECE and reliability diagrams on a class-balanced test set.
 - **Per-generator AUC:** inpainting, face swap and text-to-image reported separately.
 - **Robustness:** AUC under JPEG q90/70/50/30, ×0.5 and ×0.25 downscaling, and Gaussian blur.
 - **Unseen generators:** three extra models are trained, each with one generator left out, then tested on that generator.
@@ -156,7 +219,8 @@ ethicura-ai/
 │   └── run_demo.py          # Standalone demo script
 ├── assets/
 │   ├── summary.png          # Project overview image
-│   └── api_3.mp4            # Demo video
+│   ├── api_3.mp4            # Demo video
+│   └── eval/                # ROC, calibration and robustness charts
 ├── docs/
 │   └── model_card.md        # Model card (bias, limitations, intended use)
 ├── training/
@@ -164,6 +228,8 @@ ethicura-ai/
 │   ├── run.py               # Train + evaluate an in-house model (download → crops → train → evaluate)
 │   ├── kaggle/              # Runs run.py on a free Kaggle GPU
 │   ├── data.py, model.py, metrics.py
+│   ├── report.py            # Generates the README results tables from results/
+├── results/                 # results.json + per-run training metadata
 ├── tests/                   # pytest suite (model contract, calibration, metrics, data pipeline)
 ├── fetch_and_test_model.py  # Downloads the pretrained model and runs a smoke test
 ├── test_full_pipeline.py    # End-to-end test: face detection → classification → Grad-CAM
@@ -261,7 +327,7 @@ XLA JIT is disabled in `src/api.py` because its first-call compile stalled for m
 | Component | Technology |
 |-----------|-----------|
 | Face Detection | MTCNN (Multi-Task Cascaded CNN) |
-| Classification | EfficientNetB0 (pretrained, `ariyul/deepfake-detection-cnn_v2`) |
+| Classification | EfficientNetB0, trained in-house on DeepFakeFace (Kaggle GPU) |
 | Interpretability | Grad-CAM (Class Activation Mapping) |
 | API | FastAPI |
 | Frontend | React + Vite, hosted on Vercel |

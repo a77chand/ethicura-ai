@@ -38,6 +38,13 @@ def row(label: str, ours: float, base: float, fmt, lower_is_better: bool = False
     return f"| {label} | {a} | {b} |"
 
 
+def calibration_text(meta: dict) -> str:
+    c = meta.get("calibration")
+    if c:
+        return f"Platt scaling (a = {c['a']:.2f}, b = {c['b']:.2f} on the raw logits)"
+    return f"temperature scaling (T = {meta.get('temperature', 1.0):.2f})"
+
+
 def render(out_dir: str) -> str:
     with open(f"{out_dir}/results.json") as f:
         r = json.load(f)
@@ -115,11 +122,30 @@ def render(out_dir: str) -> str:
             "",
             f"Training: {m['train_reals']:,} real faces per epoch against the same number of fakes, "
             f"best epoch {m['best_epoch']} of {m['config']['epochs']}, {m['train_minutes']} min on "
-            f"{'a GPU' if m['config'].get('mixed_precision') else 'CPU'}. Calibration temperature T = {m['temperature']:.2f}, which brought validation "
-            f"ECE from {cal['before']['ece']:.3f} to {cal['calibrated']['ece']:.3f}.",
+            f"{'a GPU' if m['config'].get('mixed_precision') else 'CPU'}. Calibration: {calibration_text(m)} "
+            f"fitted on balanced validation (ECE {cal['calibrated']['ece']:.3f}) and folded into the final layer.",
         ]
     return "\n".join(lines) + "\n"
 
 
+START, END = "<!-- results:start -->", "<!-- results:end -->"
+
+
+def splice(readme_path: str, markdown: str):
+    """Replace the README section between the results markers."""
+    with open(readme_path) as f:
+        text = f.read()
+    head, rest = text.split(START, 1)
+    _, tail = rest.split(END, 1)
+    with open(readme_path, "w") as f:
+        f.write(f"{head}{START}\n{markdown}{END}{tail}")
+
+
 if __name__ == "__main__":
-    print(render(sys.argv[1] if len(sys.argv) > 1 else "results"))
+    # python -m training.report results [--readme README.md]
+    out_dir = sys.argv[1] if len(sys.argv) > 1 else "results"
+    markdown = render(out_dir)
+    if "--readme" in sys.argv:
+        splice(sys.argv[sys.argv.index("--readme") + 1], markdown)
+    else:
+        print(markdown)

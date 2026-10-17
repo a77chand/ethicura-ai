@@ -51,6 +51,29 @@ def test_fit_temperature_recovers_overconfidence():
     assert fit_temperature(overconfident, labels) == pytest.approx(3.0, rel=0.05)
 
 
+def test_fold_platt_matches_affine_logits(model):
+    from training.model import fold_platt
+
+    x = np.random.rand(4, 224, 224, 3).astype("float32")
+    before = model(x, training=False).numpy()[:, 0]
+    fold_platt(model, 2.0, 1.5)
+    after = model(x, training=False).numpy()[:, 0]
+    np.testing.assert_allclose(after, 1 / (1 + np.exp(-(2.0 * logit(before) + 1.5))), atol=1e-5)
+    fold_platt(model, 0.5, -0.75)  # undo: 0.5·(2z + 1.5) − 0.75 = z
+
+
+def test_fit_platt_recovers_scale_and_shift():
+    from training.model import fit_platt
+
+    rng = np.random.default_rng(3)
+    true_logits = rng.normal(0, 2, 40000)
+    labels = rng.random(40000) < 1 / (1 + np.exp(-true_logits))
+    # A model whose logits are (true - 1.0) / 2: under-confident and shifted.
+    reported = 1 / (1 + np.exp(-(true_logits - 1.0) / 2))
+    a, b = fit_platt(reported, labels)
+    assert a == pytest.approx(2.0, rel=0.05) and b == pytest.approx(1.0, abs=0.08)
+
+
 def test_summary_metrics_perfect_and_random():
     y = np.array([0] * 50 + [1] * 50)
     perfect = metrics.summary(y, y * 0.9 + 0.05)
