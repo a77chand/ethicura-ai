@@ -40,7 +40,7 @@ We built Ethicura AI to give people a proactive, interpretable tool to verify co
 **Ethicura AI** is an end-to-end deepfake detection API and interface that:
 
 - Detects manipulated **images and videos** using a pretrained **EfficientNetB0** classifier ([`ariyul/deepfake-detection-cnn_v2`](https://huggingface.co/ariyul/deepfake-detection-cnn_v2) on Hugging Face) and **MTCNN** for face extraction
-- Supports **live webcam analysis** via a React frontend that streams frames to the API
+- Supports **live webcam analysis in the browser**: a React frontend runs face tracking and an ONNX export of the classifier on-device (WebGPU), with no server and no upload
 - Provides **real-time confidence scores** (fake probability 0–100%)
 - Generates **Grad-CAM visualisations** to highlight the exact facial regions that triggered the detection — making the model's decision transparent and auditable
 - Identifies three types of manipulation:
@@ -220,7 +220,7 @@ On first use the pretrained model is downloaded from Hugging Face and cached loc
 | `/model-info` | GET | Model and benchmark summary |
 | `/predict` | POST | Upload an image or video (multipart `file`) → label, confidence, per-video stats |
 | `/predict/gradcam` | POST | Upload an image → Grad-CAM overlay as PNG (label/confidence in `X-Ethicura-*` headers) |
-| `/predict_frame` | POST | JSON `{"image_base64": "..."}` → label, confidence, `face_bbox` and the raw 7×7 Grad-CAM `heatmap` (~500 bytes); built for live webcam use. Add `"include_overlay": true` to also get the annotated frame as base64 PNG |
+| `/predict_frame` | POST | JSON `{"image_base64": "..."}` → label, confidence, `face_bbox` and the raw 7×7 Grad-CAM `heatmap` (~500 bytes), for clients that stream frames to a server (the live demo runs in the browser instead). Add `"include_overlay": true` to also get the annotated frame as base64 PNG |
 
 The models load and warm up in a background thread at startup, so the port opens immediately and `/health` reports when inference is ready. Classification and Grad-CAM share a single traced forward/backward pass. On an Apple-silicon laptop a webcam frame takes about 130 ms end to end.
 
