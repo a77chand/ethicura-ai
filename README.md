@@ -118,7 +118,8 @@ ethicura-ai/
 │   └── model_card.md        # Model card (bias, limitations, intended use)
 ├── training/
 │   ├── export_web.py        # Keras → ONNX (prob + CAM) for the in-browser demo, with parity checks
-│   ├── pipeline.py          # Training/evaluation pipeline for an in-house model (work in progress)
+│   ├── run.py               # Train + evaluate an in-house model (download → crops → train → evaluate)
+│   ├── kaggle/              # Runs run.py on a free Kaggle GPU
 │   ├── data.py, model.py, metrics.py
 ├── tests/                   # pytest suite (model contract, calibration, metrics, data pipeline)
 ├── fetch_and_test_model.py  # Downloads the pretrained model and runs a smoke test
