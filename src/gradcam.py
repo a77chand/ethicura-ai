@@ -51,7 +51,7 @@ class GradCAM:
         # graph object that reuses an existing internal tensor. This keeps
         # everything tape-tracked in a single eager pass and works for both
         # flat layers and nested submodels.
-        self._layer_sequence = self._get_layers_after(layer_name)
+        self._layers_before, self._layer_sequence = self._split_layers(layer_name)
 
         # Trace the forward+backward pass into a TF graph once, instead of
         # dispatching ~240 EfficientNet layers eagerly from Python on every
@@ -62,12 +62,14 @@ class GradCAM:
             input_signature=[tf.TensorSpec(input_shape, tf.float32)],
         )
 
-    def _get_layers_after(self, layer_name: str) -> list:
-        """Return the model's layers in order, starting after (not including)
-        the target layer, so compute() can replay the remaining forward pass."""
+    def _split_layers(self, layer_name: str):
+        """Return the model's top-level layers before the target (input layer
+        excluded, e.g. a Rescaling layer) and after it, in order, so compute()
+        can replay the full forward pass around the target."""
         layers = self.model.layers
         idx = next(i for i, l in enumerate(layers) if l.name == layer_name)
-        return layers[idx + 1:]
+        before = [l for l in layers[:idx] if not isinstance(l, tf.keras.layers.InputLayer)]
+        return before, layers[idx + 1:]
 
     def compute(self, preprocessed_input: np.ndarray) -> np.ndarray:
         """
@@ -102,7 +104,10 @@ class GradCAM:
     def _compute_tensors(self, inputs):
         with tf.GradientTape() as tape:
             # Forward pass up to and including the target layer
-            conv_outputs = self.target_layer(inputs, training=False)
+            x = inputs
+            for layer in self._layers_before:
+                x = layer(x, training=False)
+            conv_outputs = self.target_layer(x, training=False)
             tape.watch(conv_outputs)
 
             # Replay the remaining layers manually (GlobalAveragePooling2D,

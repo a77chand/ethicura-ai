@@ -6,9 +6,16 @@
 
 ## ‣ Live Demo:
 
-**[ethicura-frontend.vercel.app](https://ethicura-frontend.vercel.app)**: live webcam deepfake analysis with a Grad-CAM overlay, running in your browser against the hosted API. The API sleeps when idle, so the first visit after a break shows "waking server" for about 20 seconds.
+**[ethicura-frontend.vercel.app](https://ethicura-frontend.vercel.app)**: live webcam deepfake analysis with a heatmap overlay. It runs **entirely in your browser**, and your video never leaves the device:
 
-Interactive API docs: [/docs on the hosted API](https://anusha-chandra-007--ethicura-ai-api-api.us-east.modal.run/docs)
+- **Face tracking:** MediaPipe BlazeFace finds the face on every video frame.
+- **Classifier:** an ONNX export of the classifier runs on your GPU through WebGPU, falling back to WebAssembly.
+- **Speed:** about 30 analyses per second at about 20 ms each on a laptop, with no server and no network round trip.
+
+### How the browser version matches the Python API
+- **Heatmap without a backward pass.** The classifier head is global-average-pool → dropout → dense(sigmoid), so Grad-CAM's channel weights reduce to a positive scalar times the dense weights. After ReLU and normalisation, Grad-CAM equals classic CAM, `ReLU(Σₖ wₖ Aₖ) / max`. The exported graph computes that directly. [`training/export_web.py`](training/export_web.py) checks the result against `src/gradcam.py` numerically before it writes the model.
+- **Crop parity.** The model was trained on MTCNN face crops, but the browser uses BlazeFace. Over 73 face frames, BlazeFace boxes are mapped onto MTCNN's with a calibrated offset and scale (median IoU 0.91 with the API's crop).
+- **Verified end to end.** On those frames, the browser's fake probability differs from the Python API's by **at most 0.0004**, and every frame gets the same REAL/FAKE label.
 
 ## ‣ Demo Video:
 
@@ -109,6 +116,11 @@ ethicura-ai/
 │   └── api_3.mp4            # Demo video
 ├── docs/
 │   └── model_card.md        # Model card (bias, limitations, intended use)
+├── training/
+│   ├── export_web.py        # Keras → ONNX (prob + CAM) for the in-browser demo, with parity checks
+│   ├── pipeline.py          # Training/evaluation pipeline for an in-house model (work in progress)
+│   ├── data.py, model.py, metrics.py
+├── tests/                   # pytest suite (model contract, calibration, metrics, data pipeline)
 ├── fetch_and_test_model.py  # Downloads the pretrained model and runs a smoke test
 ├── test_full_pipeline.py    # End-to-end test: face detection → classification → Grad-CAM
 ├── modal_app.py             # Modal deployment (hosts the live API)
@@ -174,20 +186,16 @@ cd ../ethicura-frontend
 npm install
 npm run dev
 ```
-The frontend keeps the live webcam feed on screen and draws the Grad-CAM heatmap and face box over it, gliding the box between results. Two frames are kept in flight, so one uploads while the other is being processed. Each frame is captured at send time, and any out-of-order response is dropped, so analysis always runs on the current frame and requests never pile up. The page polls `/health` on load and shows "waking server" while a cold backend starts up. It points at `http://localhost:8000` by default; set `VITE_API_URL` at build time to use a deployed backend.
+The frontend runs the model in the browser and doesn't need this API. To regenerate its model file from a Keras model, run:
+```bash
+python -m training.export_web --out ../ethicura-frontend/public/models/detector.onnx [--model path/to/model.keras]
+```
 
 ### 6. Deploy
-The hosted API runs on [Modal](https://modal.com) (2 vCPU / 4 GB, scales to zero when idle):
-```bash
-pip install modal
-modal token new            # one-time browser login
-modal deploy modal_app.py
-```
-A cold start takes about 7 s to answer and about 22 s until `model_ready`. Once warm, inference is about 170 ms per frame and the webcam UI runs at about 5 frames/s.
+The live demo is a static site on Vercel and needs no backend: all inference runs in the browser.
 
-The frontend is deployed on Vercel. `ethicura-frontend/.env.production` sets `VITE_API_URL` to the Modal endpoint.
-
-Other options:
+To host the FastAPI service anyway (for image and video uploads), use one of these:
+- `modal_app.py` deploys it on [Modal](https://modal.com) with `modal deploy modal_app.py`. Expect about a 22 s cold start and about 170 ms per frame.
 - The `Dockerfile` builds a self-contained image (model baked in, port 7860) for any container host, including Hugging Face Docker Spaces, which now require a PRO plan.
 - `render.yaml` is kept for Render, but the free tier's 512 MB RAM / 0.1 CPU is too small for live webcam use.
 
@@ -212,10 +220,11 @@ XLA JIT is disabled in `src/api.py` because its first-call compile stalled for m
 | Classification | EfficientNetB0 (pretrained, `ariyul/deepfake-detection-cnn_v2`) |
 | Interpretability | Grad-CAM (Class Activation Mapping) |
 | API | FastAPI |
-| Frontend | React + Vite (webcam streaming), hosted on Vercel |
+| Frontend | React + Vite, hosted on Vercel |
+| In-browser inference | ONNX Runtime Web (WebGPU / WebAssembly), MediaPipe BlazeFace |
 | Deep Learning | TensorFlow / Keras |
 | Video Processing | OpenCV |
-| API Hosting | Modal |
+| Optional API hosting | Modal or any container host |
 
 ---
 

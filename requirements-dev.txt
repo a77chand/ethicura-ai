@@ -1,0 +1,7 @@
+-r requirements.txt
+pytest>=8.0
+scikit-learn>=1.3
+# training/export_web.py
+tf2onnx>=1.16
+onnx>=1.15
+onnxruntime>=1.17
