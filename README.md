@@ -96,8 +96,8 @@ Test set: **1,838 real and 6,219 fake faces** from people never seen in training
 | Equal error rate | **5.6%** | 51.3% |
 | Fakes caught at 1% false alarms | **82.7%** | 0.6% |
 | Fakes caught at 5% false alarms | **94.0%** | 3.9% |
-| Balanced accuracy @ 0.5 | **91.5%** | 48.6% |
-| Calibration error (ECE, balanced) | **0.076** | 0.084 |
+| Balanced accuracy @ 0.5 | **94.6%** | 48.6% |
+| Calibration error (ECE, balanced) | **0.011** | 0.084 |
 
 **Per generator** (real test faces vs. one generator's fakes):
 
@@ -127,9 +127,9 @@ Test set: **1,838 real and 6,219 fake faces** from people never seen in training
 | | Ethicura | Baseline |
 |---|---|---|
 | Frame-level AUC | **0.618 (0.557–0.676)** | 0.584 (0.541–0.632) |
-| Video-level AUC (mean over frames, 106 videos) | **0.622 (0.552–0.690)** | 0.588 (0.539–0.643) |
+| Video-level AUC (mean over frames, 106 videos) | **0.627 (0.558–0.697)** | 0.588 (0.539–0.643) |
 
-Training: 15,296 real faces per epoch against the same number of fakes, best epoch 8 of 8, 16.0 min on a GPU. Calibration: temperature scaling (T = 1.41) fitted on balanced validation (ECE 0.070) and folded into the final layer.
+Training: 15,296 real faces per epoch against the same number of fakes, best epoch 8 of 8, 16.0 min on a GPU. Calibration: Platt scaling (a = 1.02, b = 1.93 on the raw logits) fitted on balanced validation (ECE 0.009) and folded into the final layer.
 <!-- results:end -->
 
 | ROC on held-out people | Calibration | Robustness |
@@ -138,6 +138,7 @@ Training: 15,296 real faces per epoch against the same number of fakes, best epo
 
 **What the numbers say**
 - **Strong in-distribution detection:** AUC 0.986 on people never seen in training. It catches 83% of fakes while flagging only 1% of real faces.
+- **Calibrated:** when it says 80% fake, about 80% of such faces are fake (ECE 0.011 on a balanced test set). That matters because the demo shows the percentage, not just a label.
 - **Robust to degraded input:** AUC stays at 0.968 or above down to JPEG quality 30, and above 0.91 under ×0.25 downscaling or heavy blur.
 - **Face swaps are the hardest to generalise to.** A model that never saw InsightFace swaps scores only 0.765 on them, against about 0.94 for the unseen diffusion generators. Swap artefacts are evidently different enough from diffusion ones that training on one doesn't cover the other.
 - **Out of domain, it's a weak detector.** On SDFVD (commercial face-swap videos, a different dataset entirely), video-level AUC is about 0.62. The baseline's confidence interval overlaps it, so that's not a clear win. Like most detectors trained on one dataset, it shouldn't be trusted on manipulation types it wasn't trained on. This is why the live demo labels its output a *warning*, not a verdict.
@@ -231,7 +232,8 @@ ethicura-ai/
 │   ├── report.py            # Generates the README results tables from results/
 ├── results/                 # results.json + per-run training metadata
 ├── tests/                   # pytest suite (model contract, calibration, metrics, data pipeline)
-├── fetch_and_test_model.py  # Downloads the pretrained model and runs a smoke test
+├── models/                  # ethicura_effnetb0.keras: the trained, calibrated detector
+├── fetch_and_test_model.py  # Downloads the old third-party baseline and runs a smoke test
 ├── test_full_pipeline.py    # End-to-end test: face detection → classification → Grad-CAM
 ├── modal_app.py             # Modal deployment (hosts the live API)
 ├── Dockerfile               # Container image for other hosts
@@ -278,7 +280,7 @@ uvicorn src.api:app --reload
 # API available at http://localhost:8000
 ```
 
-On first use the pretrained model is downloaded from Hugging Face and cached locally.
+The API loads Ethicura's trained detector from `models/ethicura_effnetb0.keras` (17 MB, in the repo).
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|

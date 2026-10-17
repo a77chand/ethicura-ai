@@ -16,11 +16,8 @@ WORKDIR /home/user/app
 COPY --chown=user requirements.txt .
 RUN pip install --no-cache-dir --user -r requirements.txt
 
-# Bake the pretrained classifier into the image so a cold start doesn't
-# re-download it from the Hub.
-RUN python -c "from huggingface_hub import snapshot_download; snapshot_download('ariyul/deepfake-detection-cnn_v2')"
-
 COPY --chown=user src ./src
+COPY --chown=user models ./models
 
 # 7860 is the port Hugging Face Spaces expects; other hosts can override PORT.
 ENV PORT=7860

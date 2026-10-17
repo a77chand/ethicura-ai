@@ -17,13 +17,8 @@ image = (
     .apt_install("libglib2.0-0")
     .pip_install_from_requirements("requirements.txt")
     .env({"TF_XLA_FLAGS": "--tf_xla_auto_jit=0"})
-    # Bake the pretrained classifier into the image so a cold start doesn't
-    # re-download it from the Hub.
-    .run_commands(
-        "python -c \"from huggingface_hub import snapshot_download; "
-        "snapshot_download('ariyul/deepfake-detection-cnn_v2')\""
-    )
     .add_local_dir("src", remote_path="/root/src")
+    .add_local_dir("models", remote_path="/root/models")
 )
 
 app = modal.App("ethicura-ai-api", image=image)

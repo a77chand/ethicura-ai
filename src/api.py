@@ -64,7 +64,7 @@ app = FastAPI(
     title="Ethicura AI — DeepFake Detection API",
     description=(
         "Unified DeepFake Detection Framework (UDDF). "
-        "Detects manipulated faces in images and videos using XceptionNet + MTCNN, "
+        "Detects manipulated faces in images and videos using an in-house EfficientNetB0 + MTCNN, "
         "with Grad-CAM visualisations for interpretability."
     ),
     version="1.0.0",
@@ -116,15 +116,16 @@ def health_check():
 @app.get("/model-info")
 def model_info():
     return {
-        "classifier": "XceptionNet (fine-tuned on FaceForensics++)",
+        "classifier": "EfficientNetB0, trained in-house on DeepFakeFace (see README Results)",
         "face_detector": "MTCNN (Multi-Task Cascaded CNN)",
-        "interpretability": "Grad-CAM (block14_sepconv2_act layer)",
-        "input_size": "299x299",
+        "interpretability": "Grad-CAM on the EfficientNetB0 feature map",
+        "input_size": "224x224",
         "performance": {
-            "accuracy": "95%",
-            "f1_score": "92.5%",
-            "auc_roc": 0.97,
-            "benchmark": "FaceForensics++"
+            "test_set": "DeepFakeFace, people unseen in training",
+            "auc_roc": 0.986,
+            "equal_error_rate": 0.056,
+            "tpr_at_1pct_fpr": 0.827,
+            "balanced_accuracy": 0.946,
         },
         "supported_inputs": {
             "images": list(IMAGE_EXTENSIONS),

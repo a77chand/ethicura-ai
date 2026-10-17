@@ -1,6 +1,6 @@
 """
 ethicura_ai/src/detector.py
-Core detection pipeline: MTCNN face extraction → XceptionNet classification → Grad-CAM overlay.
+Core detection pipeline: MTCNN face extraction → EfficientNetB0 classification → Grad-CAM overlay.
 """
 
 import threading
@@ -9,6 +9,9 @@ import cv2
 import numpy as np
 from pathlib import Path
 
+# Ethicura's own detector, trained by training/run.py (see README "Results").
+DEFAULT_MODEL = Path(__file__).resolve().parent.parent / "models" / "ethicura_effnetb0.keras"
+
 
 class EthicuraDetector:
     """
@@ -16,7 +19,7 @@ class EthicuraDetector:
 
     Detects manipulated faces in images and videos using:
     - MTCNN for face region extraction
-    - XceptionNet for fake/real classification
+    - EfficientNetB0 (trained in-house on DeepFakeFace) for fake/real classification
     - Grad-CAM for visual interpretability
 
     Example:
@@ -28,9 +31,9 @@ class EthicuraDetector:
     def __init__(self, model_path: str = None, threshold: float = 0.5):
         """
         Args:
-            model_path: Path to fine-tuned XceptionNet weights (.h5).
-                        If None, uses pretrained ImageNet weights (lower accuracy).
-            threshold:  Decision boundary. Confidence > threshold → FAKE.
+            model_path: Path to a .keras model taking 224x224 RGB in [0, 1].
+                        Defaults to models/ethicura_effnetb0.keras.
+            threshold:  Decision boundary on the calibrated P(fake). ≥ threshold → FAKE.
         """
         self.threshold = threshold
         self.model_path = model_path
@@ -56,13 +59,8 @@ class EthicuraDetector:
     def _load_models(self):
         """Initialise MTCNN, classifier, and Grad-CAM on first use.
 
-        Classifier: pretrained EfficientNetB0-based deepfake detector
-        (ariyul/deepfake-detection-cnn_v2 on Hugging Face). This replaces the
-        original from-scratch XceptionNet head, which had no trained weights
-        checked into the repo (weights are gitignored and were never
-        committed). Swapping in a real trained model here so the pipeline
-        produces meaningful predictions rather than an untrained sigmoid head
-        on frozen ImageNet features.
+        Classifier: Ethicura's EfficientNetB0, trained in-house on
+        DeepFakeFace with Platt calibration folded into its last layer.
         """
         with self._lock:
             self._load_models_locked()
@@ -76,23 +74,16 @@ class EthicuraDetector:
             import os
             os.environ.setdefault("KERAS_BACKEND", "tensorflow")
             import keras
-            from huggingface_hub import snapshot_download
 
             # ── Face detector ──────────────────────────────────────────────
             self._face_detector = MTCNN()
 
             # ── Classifier ──────────────────────────────────────────────────
-            if self.model_path and Path(self.model_path).exists():
-                self._model = keras.saving.load_model(self.model_path)
-                print(f"[Ethicura] Loaded fine-tuned weights from {self.model_path}")
-            else:
-                print("[Ethicura] No local model_path given — downloading pretrained "
-                      "EfficientNetB0 deepfake classifier from Hugging Face "
-                      "(ariyul/deepfake-detection-cnn_v2)...")
-                local_dir = snapshot_download(repo_id="ariyul/deepfake-detection-cnn_v2")
-                weights_path = os.path.join(local_dir, "keras_model", "best_model.keras")
-                self._model = keras.saving.load_model(weights_path)
-                print("[Ethicura] Loaded pretrained EfficientNetB0 deepfake classifier.")
+            path = Path(self.model_path) if self.model_path else DEFAULT_MODEL
+            if not path.exists():
+                raise FileNotFoundError(f"Model not found: {path}")
+            self._model = keras.saving.load_model(path, compile=False)
+            print(f"[Ethicura] Loaded classifier from {path}")
 
             # ── Grad-CAM ───────────────────────────────────────────────────
             # EfficientNetB0 is loaded here as a nested Functional submodel
@@ -105,7 +96,7 @@ class EthicuraDetector:
         except ImportError as e:
             raise ImportError(
                 f"Missing dependency: {e}\n"
-                "Install with: pip install mtcnn tensorflow keras huggingface_hub opencv-python"
+                "Install with: pip install mtcnn tensorflow keras opencv-python"
             )
 
     # ──────────────────────────────────────────────────────────────────────────
