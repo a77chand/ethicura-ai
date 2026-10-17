@@ -274,7 +274,13 @@ class EthicuraDetector:
         if scale < 1.0:
             detect_input = cv2.resize(image_rgb, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
 
-        detections = self._face_detector.detect_faces(detect_input)
+        try:
+            detections = self._face_detector.detect_faces(detect_input)
+        except ValueError:
+            # mtcnn 1.0 passes an empty batch to its last stage when the
+            # earlier stages reject every candidate; newer Keras raises on
+            # that instead of returning nothing. It means "no face".
+            detections = []
         if not detections:
             return None, None
 

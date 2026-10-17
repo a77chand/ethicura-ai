@@ -144,7 +144,11 @@ def _crop_dff_chunk(args):
                 continue
             if image.ndim == 3 and image.shape[2] == 4:
                 image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
-            face, bbox = _to_model_input(image)
+            try:
+                face, bbox = _to_model_input(image)
+            except Exception as e:  # one bad image shouldn't sink a 2-hour run
+                rows.append({**row, "status": f"error: {type(e).__name__}"})
+                continue
             if face is None:
                 rows.append({**row, "status": "no_face"})
                 continue
