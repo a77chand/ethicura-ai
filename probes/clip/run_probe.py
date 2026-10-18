@@ -1,9 +1,12 @@
 """
-PyTorch baseline: a linear probe on frozen CLIP ViT-L/14 features (the UnivFD
+PyTorch baseline: a linear probe on frozen CLIP image features (the UnivFD
 recipe, Ojha et al., CVPR 2023), evaluated exactly like Ethicura's detector.
+Reported results use CLIP ViT-B/16 (OpenAI weights); UnivFD itself used
+ViT-L/14 (--model ViT-L-14).
 
     pip install -r probes/clip/requirements.txt
     python -m probes.clip.run_probe --crops /path/to/crops --cache /tmp/clip_cache
+    python -m probes.clip.run_probe ... --backend hf   # same weights via Hugging Face Transformers
 
 Reads the face-crop TFRecords produced by training/run.py (read-only: same
 images, splits and filters as the main evaluation), writes only to --cache
@@ -51,19 +54,55 @@ def records(crops: str, split: str):
                ex["name"].decode(), int(ex["face_px"]))
 
 
-@torch.no_grad()
-def embed(crops: str, split: str, cache: str, model, preprocess, device, batch: int = 64):
+HF_IDS = {"ViT-B-16": "openai/clip-vit-base-patch16", "ViT-L-14": "openai/clip-vit-large-patch14"}
+
+
+def load_encoder(backend: str, name: str, pretrained: str, device: str):
+    """Return encode(list of uint8 RGB arrays) -> L2-normalised float32 features.
+
+    open_clip and Hugging Face Transformers load the same OpenAI CLIP weights;
+    tests/test_clip_backends.py checks the two give the same embeddings."""
+    from PIL import Image
+
+    if backend == "hf":
+        from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
+
+        processor = CLIPImageProcessor.from_pretrained(HF_IDS[name])
+        model = CLIPVisionModelWithProjection.from_pretrained(HF_IDS[name], torch_dtype=DTYPE[device]).to(device).eval()
+
+        def forward(images):
+            x = processor(images=[Image.fromarray(im) for im in images], return_tensors="pt")["pixel_values"]
+            return model(pixel_values=x.to(device, DTYPE[device])).image_embeds
+    else:
+        import open_clip
+
+        # OpenAI's CLIP uses QuickGELU. open_clip's plain "ViT-B-16" config uses
+        # GELU, so loading OpenAI weights into it gives a slightly different
+        # network (cosine ~0.97 vs the real model); the "-quickgelu" config
+        # matches Hugging Face's openai/clip-* exactly (see the test).
+        arch = f"{name}-quickgelu" if pretrained == "openai" else name
+        model, _, preprocess = open_clip.create_model_and_transforms(arch, pretrained=pretrained, device=device)
+        model = model.eval().to(DTYPE[device])
+
+        def forward(images):
+            x = torch.stack([preprocess(Image.fromarray(im)) for im in images]).to(device, DTYPE[device])
+            return model.encode_image(x)
+
+    @torch.no_grad()
+    def encode(images):
+        return torch.nn.functional.normalize(forward(images).float(), dim=-1).cpu().numpy()
+
+    return encode
+
+
+def embed(crops: str, split: str, cache: str, encode, batch: int = 64):
     path = f"{cache}/{split}.npz"
     if os.path.exists(path):
         return dict(np.load(path))
-    from PIL import Image
-
     feats, meta, buf = [], [], []
 
     def flush():
-        x = torch.stack([preprocess(Image.fromarray(im)) for im in buf]).to(device, DTYPE[device])
-        f = model.encode_image(x).float()
-        feats.append(torch.nn.functional.normalize(f, dim=-1).cpu().numpy())
+        feats.append(encode(buf))
         buf.clear()
 
     for n, (img, label, source, group, name, face_px) in enumerate(records(crops, split), 1):
@@ -145,21 +184,19 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--crops", required=True)
     ap.add_argument("--cache", default="/tmp/clip_cache")
-    ap.add_argument("--model", default="ViT-L-14")
+    ap.add_argument("--model", default="ViT-B-16", choices=list(HF_IDS))
+    ap.add_argument("--backend", default="open_clip", choices=["open_clip", "hf"])
     ap.add_argument("--pretrained", default="openai")
     ap.add_argument("--out", default="results/clip_probe.json")
     args = ap.parse_args()
     os.makedirs(args.cache, exist_ok=True)
 
-    import open_clip
-
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
-    model, _, preprocess = open_clip.create_model_and_transforms(args.model, pretrained=args.pretrained, device=device)
-    model = model.eval().to(DTYPE[device])
-    data = {s: embed(args.crops, s, args.cache, model, preprocess, device) for s in ["train", "val", "test", "sdfvd"]}
+    encode = load_encoder(args.backend, args.model, args.pretrained, device)
+    data = {s: embed(args.crops, s, args.cache, encode) for s in ["train", "val", "test", "sdfvd"]}
     tr, va, te, sd = data["train"], data["val"], data["test"], data["sdfvd"]
 
-    results = {"encoder": f"CLIP {args.model} ({args.pretrained}), frozen", "probe": "torch.nn.Linear, AdamW",
+    results = {"encoder": f"CLIP {args.model} ({args.pretrained}), frozen", "backend": args.backend, "probe": "torch.nn.Linear, AdamW",
                "train_faces": int(len(tr["y"]))}
     predict, val_auc = train_probe(tr, va)
     p = predict(te)

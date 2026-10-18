@@ -14,7 +14,7 @@
   - The weak spots are stated plainly: unseen face swaps score 0.765, and cross-dataset video scores 0.63.
 - **The browser demo is measured too:** its exact pipeline, run in headless Chrome on the same test set, scores AUC 0.982.
 - **Explainable:** every score comes with a Grad-CAM heatmap. In the browser this is computed without a backward pass.
-- **Benchmarked against a PyTorch CLIP probe (UnivFD):** CLIP generalises much better to unseen face swaps (0.932 vs 0.765) and out-of-domain video (0.708 vs 0.627), while the fine-tuned model wins in-distribution. This points to the next step (see [below](#pytorch-baseline-clip-linear-probe)).
+- **Benchmarked against a PyTorch CLIP probe (UnivFD):** CLIP generalises much better to unseen face swaps (0.925 vs 0.765) and out-of-domain video (0.773 vs 0.627), while the fine-tuned model wins in-distribution. This points to the next step (see [below](#pytorch-baseline-clip-linear-probe)).
 
 ![Project Summary](assets/summary.png)
 
@@ -156,28 +156,28 @@ Full numbers are in [`results/results.json`](results/results.json), with per-run
 
 ### PyTorch baseline: CLIP linear probe
 
-As a reference point, [`probes/clip/`](probes/clip/) trains the **UnivFD** recipe (Ojha et al., CVPR 2023) in PyTorch: a single `nn.Linear` on **frozen** CLIP ViT-B/16 image features. It uses the same face crops, splits, filters, Platt calibration and metrics code as the main model, and reads the data read-only.
+As a reference point, [`probes/clip/`](probes/clip/) trains the **UnivFD** recipe (Ojha et al., CVPR 2023) in PyTorch: a single `nn.Linear` on **frozen** CLIP ViT-B/16 image features (OpenAI weights; UnivFD itself used ViT-L/14). The weights load through OpenCLIP or Hugging Face Transformers (`--backend hf`). A test checks that both give identical features. That test caught an OpenCLIP config that silently loaded OpenAI's weights with the wrong activation (GELU instead of QuickGELU), and these results use the corrected network. It uses the same face crops, splits, filters, Platt calibration and metrics code as the main model, and reads the data read-only.
 
 <!-- clip:start -->
 | | Ethicura EfficientNetB0 (fine-tuned) | CLIP ViT-B-16 (openai), frozen + linear probe |
 |---|---|---|
-| AUC (95% CI) | **0.986 (0.984–0.988)** | 0.970 (0.967–0.974) |
-| Fakes caught at 1% false alarms | **82.7%** | 66.9% |
-| Balanced accuracy @ 0.5 | **94.6%** | 91.0% |
-| Never saw SD inpainting | 0.939 (0.933–0.946) | **0.963 (0.958–0.968)** |
-| Never saw InsightFace swap | 0.765 (0.750–0.779) | **0.932 (0.924–0.939)** |
-| Never saw SD text-to-image | **0.946 (0.939–0.952)** | 0.903 (0.894–0.912) |
-| SDFVD video-level AUC (out of domain) | 0.627 (0.558–0.697) | **0.708 (0.640–0.770)** |
+| AUC (95% CI) | **0.986 (0.984–0.988)** | 0.968 (0.965–0.972) |
+| Fakes caught at 1% false alarms | **82.7%** | 68.4% |
+| Balanced accuracy @ 0.5 | **94.6%** | 90.5% |
+| Never saw SD inpainting | 0.939 (0.933–0.946) | **0.956 (0.950–0.961)** |
+| Never saw InsightFace swap | 0.765 (0.750–0.779) | **0.925 (0.916–0.932)** |
+| Never saw SD text-to-image | **0.946 (0.939–0.952)** | 0.883 (0.873–0.893) |
+| SDFVD video-level AUC (out of domain) | 0.627 (0.558–0.697) | **0.773 (0.708–0.829)** |
 <!-- clip:end -->
 
 **What it shows:**
-- **The fine-tuned EfficientNet is best on generators it was trained on** (AUC 0.986 vs 0.970).
+- **The fine-tuned EfficientNet is best on generators it was trained on** (AUC 0.986 vs 0.968).
 - **Frozen CLIP features generalise far better** to what wasn't in training:
-  - Unseen InsightFace swaps: **0.932 vs 0.765**.
-  - Unseen inpainting: 0.963 vs 0.939.
-  - Out-of-domain SDFVD videos: **0.708 vs 0.627**.
+  - Unseen InsightFace swaps: **0.925 vs 0.765**.
+  - Unseen inpainting: 0.956 vs 0.939.
+  - Out-of-domain SDFVD videos: **0.773 vs 0.627**.
 - **This matches the UnivFD finding:** fine-tuning a CNN specialises it to its training generators, while large pretrained features carry more general "real image" structure.
-- **The one exception is unseen text-to-image fakes,** where the EfficientNet stays ahead (0.946 vs 0.903).
+- **The one exception is unseen text-to-image fakes,** where the EfficientNet stays ahead (0.946 vs 0.883).
 - **The obvious next experiment** is to combine the two: fine-tuned CNN features and CLIP features, or a light fine-tune of CLIP itself.
 
 ```bash
@@ -359,7 +359,7 @@ XLA JIT is disabled in `src/api.py` because its first-call compile stalled for m
 ## ‣ Next Steps:
 
 These are the measured weak spots, in priority order:
-- **Generalise to unseen face swaps:** this scores 0.765. A frozen CLIP probe already reaches 0.932 here (see the PyTorch baseline). The next step is to fuse CLIP features with the fine-tuned CNN, or lightly fine-tune CLIP, and to train on more swap pipelines (SimSwap, FaceFusion and similar).
+- **Generalise to unseen face swaps:** this scores 0.765. A frozen CLIP probe already reaches 0.925 here (see the PyTorch baseline). The next step is to fuse CLIP features with the fine-tuned CNN, or lightly fine-tune CLIP, and to train on more swap pipelines (SimSwap, FaceFusion and similar).
 - **Cross-dataset video:** this scores 0.63. Fixes would be adding real video data for training, and a temporal model across frames, since detection is currently frame by frame.
 - **Subgroup evaluation:** collect or annotate demographic labels and report per-group error rates.
 - **Browser crops:** fine-tune on BlazeFace crops as well as MTCNN crops, to close the remaining 0.004 AUC gap and the per-frame flips on turned heads.
@@ -380,7 +380,7 @@ These are the measured weak spots, in priority order:
 | Face Detection | MTCNN (Multi-Task Cascaded CNN) |
 | Classification | EfficientNetB0, trained in-house on DeepFakeFace |
 | Training & evaluation | TensorFlow `tf.data`, Kaggle (free CPU + GPU jobs), scikit-learn metrics, person-level bootstrap |
-| Baseline | PyTorch + OpenCLIP (CLIP ViT-B/16 linear probe, UnivFD recipe) |
+| Baseline | PyTorch, OpenCLIP and Hugging Face Transformers (CLIP ViT-B/16 linear probe, UnivFD recipe) |
 | Testing | pytest, GitHub Actions CI |
 | Interpretability | Grad-CAM (Class Activation Mapping) |
 | API | FastAPI |
