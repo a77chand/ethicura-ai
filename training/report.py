@@ -128,17 +128,41 @@ def render(out_dir: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-START, END = "<!-- results:start -->", "<!-- results:end -->"
+def render_clip(out_dir: str) -> str:
+    """Ethicura vs the PyTorch CLIP linear probe (probes/clip), same test set."""
+    with open(f"{out_dir}/results.json") as f:
+        r = json.load(f)
+    with open(f"{out_dir}/clip_probe.json") as f:
+        c = json.load(f)
+    e = r["models"]["ethicura"]
+    logo = r["leave_one_generator_out"]
+    rows = [
+        row("AUC (95% CI)", e["overall"]["auc"], c["overall"]["auc"], None,
+            ours_text=ci(e["overall"]), base_text=ci(c["overall"])),
+        row("Fakes caught at 1% false alarms", e["overall"]["tpr_at_fpr_1pct"], c["overall"]["tpr_at_fpr_1pct"], pct),
+        row("Balanced accuracy @ 0.5", e["overall_balanced"]["balanced_accuracy"],
+            c["overall_balanced"]["balanced_accuracy"], pct),
+    ]
+    for g, label in GENERATORS.items():
+        rows.append(row(f"Never saw {label}", logo[g]["held_out_model"]["auc"],
+                        c["leave_one_generator_out"][g]["auc"], None,
+                        ours_text=ci(logo[g]["held_out_model"]), base_text=ci(c["leave_one_generator_out"][g])))
+    rows.append(row("SDFVD video-level AUC (out of domain)", e["sdfvd_video"]["auc"], c["sdfvd_video"]["auc"], None,
+                    ours_text=ci(e["sdfvd_video"]), base_text=ci(c["sdfvd_video"])))
+    return "\n".join([
+        f"| | Ethicura EfficientNetB0 (fine-tuned) | {c['encoder']} + linear probe |",
+        "|---|---|---|", *rows]) + "\n"
 
 
-def splice(readme_path: str, markdown: str):
-    """Replace the README section between the results markers."""
+def splice(readme_path: str, markdown: str, tag: str = "results"):
+    """Replace the README section between <!-- {tag}:start --> and <!-- {tag}:end -->."""
+    start, end = f"<!-- {tag}:start -->", f"<!-- {tag}:end -->"
     with open(readme_path) as f:
         text = f.read()
-    head, rest = text.split(START, 1)
-    _, tail = rest.split(END, 1)
+    head, rest = text.split(start, 1)
+    _, tail = rest.split(end, 1)
     with open(readme_path, "w") as f:
-        f.write(f"{head}{START}\n{markdown}{END}{tail}")
+        f.write(f"{head}{start}\n{markdown}{end}{tail}")
 
 
 if __name__ == "__main__":
@@ -146,6 +170,9 @@ if __name__ == "__main__":
     out_dir = sys.argv[1] if len(sys.argv) > 1 else "results"
     markdown = render(out_dir)
     if "--readme" in sys.argv:
-        splice(sys.argv[sys.argv.index("--readme") + 1], markdown)
+        readme = sys.argv[sys.argv.index("--readme") + 1]
+        splice(readme, markdown)
+        if os.path.exists(f"{out_dir}/clip_probe.json"):
+            splice(readme, render_clip(out_dir), "clip")
     else:
         print(markdown)

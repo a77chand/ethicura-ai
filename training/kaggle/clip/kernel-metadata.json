@@ -1,0 +1,14 @@
+{
+  "id": "a77chand/ethicura-clip-probe",
+  "title": "Ethicura CLIP probe",
+  "code_file": "clip_kernel.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "machine_shape": "NvidiaTeslaP100",
+  "dataset_sources": [],
+  "competition_sources": [],
+  "kernel_sources": ["a77chand/ethicura-face-crops"]
+}

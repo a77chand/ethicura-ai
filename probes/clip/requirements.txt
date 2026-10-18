@@ -1,0 +1,4 @@
+# PyTorch baseline (CLIP linear probe). TensorFlow from ../../requirements.txt is used only to read the crop TFRecords.
+torch>=2.2
+open_clip_torch>=2.24
+Pillow>=9.5.0
