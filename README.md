@@ -163,7 +163,7 @@ As a reference point, [`probes/clip/`](probes/clip/) trains the **UnivFD** recip
 |---|---|---|
 | AUC (95% CI) | **0.986 (0.984–0.988)** | 0.970 (0.967–0.974) |
 | Fakes caught at 1% false alarms | **82.7%** | 66.9% |
-| Balanced accuracy @ 0.5 | **94.3%** | 90.6% |
+| Balanced accuracy @ 0.5 | **94.6%** | 91.0% |
 | Never saw SD inpainting | 0.939 (0.933–0.946) | **0.963 (0.958–0.968)** |
 | Never saw InsightFace swap | 0.765 (0.750–0.779) | **0.932 (0.924–0.939)** |
 | Never saw SD text-to-image | **0.946 (0.939–0.952)** | 0.903 (0.894–0.912) |

@@ -140,8 +140,8 @@ def render_clip(out_dir: str) -> str:
         row("AUC (95% CI)", e["overall"]["auc"], c["overall"]["auc"], None,
             ours_text=ci(e["overall"]), base_text=ci(c["overall"])),
         row("Fakes caught at 1% false alarms", e["overall"]["tpr_at_fpr_1pct"], c["overall"]["tpr_at_fpr_1pct"], pct),
-        row("Balanced accuracy @ 0.5", e["overall_balanced"]["balanced_accuracy"],
-            c["overall_balanced"]["balanced_accuracy"], pct),
+        row("Balanced accuracy @ 0.5", e["overall"]["balanced_accuracy"],
+            c["overall"]["balanced_accuracy"], pct),
     ]
     for g, label in GENERATORS.items():
         rows.append(row(f"Never saw {label}", logo[g]["held_out_model"]["auc"],
