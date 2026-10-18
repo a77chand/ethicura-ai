@@ -84,7 +84,7 @@
 1. **Out-of-domain manipulations.** It performs well on the three generators it was trained on, but weakly on unseen face-swap pipelines (0.765) and on a different video dataset (0.63). Expect similar or worse results on newer generators, other face-swap tools and lip-sync fakes.
 2. **Frame-by-frame only.** There's no temporal model, so it can't detect inconsistencies across frames. Video verdicts are averages of per-frame scores.
 3. **Celebrity photos.** The real images are IMDB-WIKI press and event photos, unlike webcam footage (lighting, sensors, compression). The live webcam demo is therefore out of domain in a mild way.
-4. **Face detector sensitivity.** Scores depend on the crop. The browser uses BlazeFace mapped onto MTCNN-style boxes: with identical crops it matches the Python API on 72 of 73 test frames, but with its own detector only 66 of 73 single-frame labels match (worse on turned heads).
+4. **Face detector sensitivity.** Scores depend on the crop. Measured on the full test set, the browser pipeline (BlazeFace) reaches AUC 0.982 against 0.986 with MTCNN, and misses the face in 2.2% of images. Individual frames of turned heads can still flip near the 50% line.
 5. **Faces under about 80 px** were excluded from training and testing, so very small or distant faces are unvalidated.
 6. **Adversarial attacks.** The model isn't hardened against perturbations designed to fool it.
 

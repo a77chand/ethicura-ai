@@ -13,15 +13,17 @@
 - **Face tracking:** MediaPipe BlazeFace finds the face on every video frame.
 - **Classifier:** an ONNX export of Ethicura's **own trained detector** (AUC 0.986 on people it never saw; see [Results](#-results)) runs on your GPU through WebGPU, falling back to WebAssembly.
 - **Speed:** about 30 analyses per second at about 20 ms each on a laptop, with no server and no network round trip.
+- **Accuracy, measured in the browser itself:** the demo's exact pipeline was run in headless Chrome over the same 8,057 test faces (people never seen in training). It scores **AUC 0.982** (0.980–0.985), against 0.986 for the Python/MTCNN pipeline, with 93.4% balanced accuracy and calibration error 0.014. BlazeFace finds no face in 2.2% of images. Details: [`results/browser_pipeline.json`](results/browser_pipeline.json) and the [harness](https://github.com/a77chand/ethicura-frontend/tree/main/eval).
 
 ### How the browser version matches the Python API
 - **Heatmap without a backward pass.** The classifier head is global-average-pool → dropout → dense(sigmoid), so Grad-CAM's channel weights reduce to a positive scalar times the dense weights. After ReLU and normalisation, Grad-CAM equals classic CAM, `ReLU(Σₖ wₖ Aₖ) / max`. The exported graph computes that directly. [`training/export_web.py`](training/export_web.py) checks the result against `src/gradcam.py` numerically before it writes the model.
 - **Same preprocessing.** The browser resizes face crops with a JavaScript port of OpenCV's bilinear resize, the one used in training. The canvas's own smoothing filter shifted predictions noticeably.
 - **Crop parity.** The model was trained on MTCNN face crops, but the browser uses BlazeFace. A small ridge regression from BlazeFace's six landmarks maps its box onto MTCNN's (median crop overlap 0.92 with the API's crop over 73 frames).
-- **Verified end to end** on those 73 frames:
-  - **Identical crops:** browser and Python fake probabilities differ by a median of **0.005** (max 0.06), and 72 of 73 labels match. The one mismatch sits right at the 50% line.
-  - **The browser's own face detector:** the median difference is 0.07, and **66 of 73** single-frame labels match. The gap is crop sensitivity: the two detectors box turned heads differently, and the calibrated model is sharp enough for that to swing some scores. The live verdict averages 8 frames, which damps it. Calibrating the browser pipeline on its own crops is the next step.
-  - **Correction to an earlier version of this README:** it reported a 0.0004 maximum difference. That was measured against the old third-party model, which outputs about 0.497 for every face, so any crop agreed.
+- **Per-frame agreement with the API** on 73 video frames:
+  - **Identical crops:** browser and Python probabilities differ by a median of 0.005 (max 0.06), and 72 of 73 labels match.
+  - **The browser's own face detector:** 66 of 73 single-frame labels match. The two detectors box turned heads differently, and some scores near 50% flip. On the full test set this costs only 0.004 AUC (above).
+- **No separate browser calibration.** A Platt correction fitted on the browser pipeline's validation scores came out near the identity (scale 0.92, shift 0.16) and only moved test calibration error from 0.014 to 0.010. The browser and the API therefore ship the same model.
+- **Correction to an earlier version of this README:** it reported a 0.0004 maximum browser/API difference. That was measured against the old third-party model, which outputs about 0.497 for every face, so any crop agreed.
 
 ## ‣ Demo Video:
 
