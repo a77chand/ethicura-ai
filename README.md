@@ -4,6 +4,17 @@
 
 > *Empowering digital trust through real-time, interpretable deepfake detection.*
 
+### At a glance
+- **[Live demo](https://ethicura-frontend.vercel.app):** a webcam deepfake detector that runs **entirely in the browser** (WebGPU, about 30 analyses per second). No server is involved and no video is uploaded.
+- **Its own trained model:** an EfficientNetB0 trained on 120k images (DeepFakeFace). It scores **AUC 0.986** on people never seen in training, catches **82.7% of fakes at a 1% false-alarm rate**, and is calibrated to ECE 0.011. The third-party model it replaced scores 0.48, which is chance.
+- **Evaluation built to avoid fooling ourselves:**
+  - Splits are by person, and real-vs-fake shortcuts found in the data are removed.
+  - Confidence intervals come from a person-level bootstrap.
+  - Robustness is tested under compression and blur, generalisation is tested on unseen generators, and a separate video dataset serves as a cross-dataset test.
+  - The weak spots are stated plainly: unseen face swaps score 0.765, and cross-dataset video scores 0.63.
+- **The browser demo is measured too:** its exact pipeline, run in headless Chrome on the same test set, scores AUC 0.982.
+- **Explainable:** every score comes with a Grad-CAM heatmap. In the browser this is computed without a backward pass.
+
 ![Project Summary](assets/summary.png)
 
 ## ‣ Live Demo:
@@ -25,11 +36,11 @@
 - **No separate browser calibration.** A Platt correction fitted on the browser pipeline's validation scores came out near the identity (scale 0.92, shift 0.16) and only moved test calibration error from 0.014 to 0.010. The browser and the API therefore ship the same model.
 - **Correction to an earlier version of this README:** it reported a 0.0004 maximum browser/API difference. That was measured against the old third-party model, which outputs about 0.497 for every face, so any crop agreed.
 
-## ‣ Demo Video:
+## ‣ Demo Video (original version):
 
 [https://github.com/user-attachments/assets/demo.mp4](https://github.com/a77chand/ethicura-ai/raw/main/assets/api_3.mp4)
 
-> The video shows the original XceptionNet version of Ethicura AI analysing a video of Elon Musk. It flags the video as a deepfake with a **57.5% fake confidence score**, and a Grad-CAM saliency overlay highlights the manipulated facial regions.
+> This recording predates the current model. It shows the original XceptionNet version of Ethicura AI analysing a video of Elon Musk, flagging it as a deepfake with a 57.5% fake score and a Grad-CAM overlay. To see the current detector, try the [live demo](https://ethicura-frontend.vercel.app).
 
 ---
 
@@ -55,30 +66,28 @@ We built Ethicura AI to give people a proactive, interpretable tool to verify co
 
 ## ‣ Architecture:
 
+One trained model serves two pipelines:
+
 ```
-Input (Image / Video)
-        │
-        ▼
-┌───────────────────┐
-│   MTCNN           │  ← Face detection & extraction
-│   Face Detector   │     Crops facial region from each frame
-└───────────────────┘
-        │
-        ▼
-┌───────────────────┐
-│   EfficientNetB0  │  ← Deepfake classification
-│   Classifier      │     Trained in-house on DeepFakeFace, 224×224
-└───────────────────┘
-        │
-        ▼
-┌───────────────────┐
-│   Grad-CAM        │  ← Interpretability layer
-│   Visualiser      │     Generates saliency map over face
-└───────────────────┘
-        │
-        ▼
-Output: Confidence Score + Annotated Frame
+                 Python API (this repo)                    Live demo (browser, ethicura-frontend)
+                 ──────────────────────                    ──────────────────────────────────────
+Input            image / video upload                      webcam frame
+                        │                                           │
+Face             MTCNN, 20% margin                         MediaPipe BlazeFace + 6 landmarks
+                        │                                  → ridge map onto the MTCNN-style crop
+                        │                                           │
+Preprocess       cv2.resize → 224×224, [0,1]               JS port of cv2 bilinear resize → 224×224
+                        │                                           │
+Classify         EfficientNetB0 (Keras, CPU)               same weights, ONNX on WebGPU / WASM
+                 Platt calibration folded in               (exported by training/export_web.py)
+                        │                                           │
+Explain          Grad-CAM (traced fwd + bwd pass)          CAM in-graph (equal to Grad-CAM for
+                        │                                   this head; no backward pass)
+                        ▼                                           ▼
+Output           P(fake) + heatmap/overlay                 P(fake), averaged over 8 frames, + heatmap
 ```
+
+`training/run.py` produces the model: DeepFakeFace → MTCNN crops (the same code as the API) → TFRecords → fine-tune → Platt calibration → evaluation.
 
 ---
 
@@ -229,7 +238,7 @@ ethicura-ai/
 │   ├── kaggle/              # Runs run.py on a free Kaggle GPU
 │   ├── data.py, model.py, metrics.py
 │   ├── report.py            # Generates the README results tables from results/
-├── results/                 # results.json + per-run training metadata
+├── results/                 # results.json, browser_pipeline.json, per-run training metadata
 ├── tests/                   # pytest suite (model contract, calibration, metrics, data pipeline)
 ├── models/                  # ethicura_effnetb0.keras: the trained, calibrated detector
 ├── fetch_and_test_model.py  # Downloads the old third-party baseline and runs a smoke test
@@ -314,6 +323,14 @@ XLA JIT is disabled in `src/api.py` because its first-call compile stalled for m
 
 ---
 
+## ‣ Next Steps:
+
+These are the measured weak spots, in priority order:
+- **Generalise to unseen face swaps:** this scores 0.765. Fixes would be training on more swap pipelines (SimSwap, FaceFusion and similar) and adding swap-specific augmentation.
+- **Cross-dataset video:** this scores 0.63. Fixes would be adding real video data for training, and a temporal model across frames, since detection is currently frame by frame.
+- **Subgroup evaluation:** collect or annotate demographic labels and report per-group error rates.
+- **Browser crops:** fine-tune on BlazeFace crops as well as MTCNN crops, to close the remaining 0.004 AUC gap and the per-frame flips on turned heads.
+
 ## ‣ Future Potential:
 
 - **Education & e-learning**: Verify authenticity of online instructional content, exams, and interviews
@@ -328,7 +345,9 @@ XLA JIT is disabled in `src/api.py` because its first-call compile stalled for m
 | Component | Technology |
 |-----------|-----------|
 | Face Detection | MTCNN (Multi-Task Cascaded CNN) |
-| Classification | EfficientNetB0, trained in-house on DeepFakeFace (Kaggle GPU) |
+| Classification | EfficientNetB0, trained in-house on DeepFakeFace |
+| Training & evaluation | TensorFlow `tf.data`, Kaggle (free CPU + GPU jobs), scikit-learn metrics, person-level bootstrap |
+| Testing | pytest, GitHub Actions CI |
 | Interpretability | Grad-CAM (Class Activation Mapping) |
 | API | FastAPI |
 | Frontend | React + Vite, hosted on Vercel |
