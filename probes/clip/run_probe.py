@@ -22,6 +22,8 @@ from training.metrics import balanced_indices, bootstrap_auc_ci, summary
 from training.model import fit_platt, logit
 
 FAKES = ["inpainting", "insight", "text2img"]
+# Half precision on GPUs (4x faster on Apple MPS); features are L2-normalised in float32.
+DTYPE = {"cuda": torch.float16, "mps": torch.float16, "cpu": torch.float32}
 MIN_FACE_PX = 80  # same filter as the main evaluation
 
 
@@ -36,11 +38,17 @@ def records(crops: str, split: str):
         ("image", tf.string), ("label", tf.int64), ("source", tf.string),
         ("group", tf.string), ("name", tf.string), ("face_px", tf.int64)]}
     files = sorted(glob.glob(f"{crops}/{split}/*.tfrecord"))
-    for rec in tf.data.TFRecordDataset(files):
+
+    def parse(rec):
         ex = tf.io.parse_single_example(rec, spec)
-        yield (tf.io.decode_jpeg(ex["image"], channels=3).numpy(), int(ex["label"]),
-               ex["source"].numpy().decode(), ex["group"].numpy().decode(),
-               ex["name"].numpy().decode(), int(ex["face_px"]))
+        ex["image"] = tf.io.decode_jpeg(ex["image"], channels=3)
+        return ex
+
+    # Parallel parse/decode: per-record eager parsing capped reads at ~70/s.
+    ds = tf.data.TFRecordDataset(files, num_parallel_reads=8).map(parse, num_parallel_calls=8).prefetch(256)
+    for ex in ds.as_numpy_iterator():
+        yield (ex["image"], int(ex["label"]), ex["source"].decode(), ex["group"].decode(),
+               ex["name"].decode(), int(ex["face_px"]))
 
 
 @torch.no_grad()
@@ -53,7 +61,7 @@ def embed(crops: str, split: str, cache: str, model, preprocess, device, batch: 
     feats, meta, buf = [], [], []
 
     def flush():
-        x = torch.stack([preprocess(Image.fromarray(im)) for im in buf]).to(device)
+        x = torch.stack([preprocess(Image.fromarray(im)) for im in buf]).to(device, DTYPE[device])
         f = model.encode_image(x).float()
         feats.append(torch.nn.functional.normalize(f, dim=-1).cpu().numpy())
         buf.clear()
@@ -147,7 +155,7 @@ def main():
 
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     model, _, preprocess = open_clip.create_model_and_transforms(args.model, pretrained=args.pretrained, device=device)
-    model.eval()
+    model = model.eval().to(DTYPE[device])
     data = {s: embed(args.crops, s, args.cache, model, preprocess, device) for s in ["train", "val", "test", "sdfvd"]}
     tr, va, te, sd = data["train"], data["val"], data["test"], data["sdfvd"]
 

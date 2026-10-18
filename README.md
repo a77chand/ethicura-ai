@@ -14,6 +14,7 @@
   - The weak spots are stated plainly: unseen face swaps score 0.765, and cross-dataset video scores 0.63.
 - **The browser demo is measured too:** its exact pipeline, run in headless Chrome on the same test set, scores AUC 0.982.
 - **Explainable:** every score comes with a Grad-CAM heatmap. In the browser this is computed without a backward pass.
+- **Benchmarked against a PyTorch CLIP probe (UnivFD):** CLIP generalises much better to unseen face swaps (0.932 vs 0.765) and out-of-domain video (0.708 vs 0.627), while the fine-tuned model wins in-distribution. This points to the next step (see [below](#pytorch-baseline-clip-linear-probe)).
 
 ![Project Summary](assets/summary.png)
 
@@ -153,6 +154,37 @@ Training: 15,296 real faces per epoch against the same number of fakes, best epo
 
 Full numbers are in [`results/results.json`](results/results.json), with per-run training metadata in `results/models/`. The tables above are generated from those files by `python -m training.report results --readme README.md`.
 
+### PyTorch baseline: CLIP linear probe
+
+As a reference point, [`probes/clip/`](probes/clip/) trains the **UnivFD** recipe (Ojha et al., CVPR 2023) in PyTorch: a single `nn.Linear` on **frozen** CLIP ViT-B/16 image features. It uses the same face crops, splits, filters, Platt calibration and metrics code as the main model, and reads the data read-only.
+
+<!-- clip:start -->
+| | Ethicura EfficientNetB0 (fine-tuned) | CLIP ViT-B-16 (openai), frozen + linear probe |
+|---|---|---|
+| AUC (95% CI) | **0.986 (0.984–0.988)** | 0.970 (0.967–0.974) |
+| Fakes caught at 1% false alarms | **82.7%** | 66.9% |
+| Balanced accuracy @ 0.5 | **94.3%** | 90.6% |
+| Never saw SD inpainting | 0.939 (0.933–0.946) | **0.963 (0.958–0.968)** |
+| Never saw InsightFace swap | 0.765 (0.750–0.779) | **0.932 (0.924–0.939)** |
+| Never saw SD text-to-image | **0.946 (0.939–0.952)** | 0.903 (0.894–0.912) |
+| SDFVD video-level AUC (out of domain) | 0.627 (0.558–0.697) | **0.708 (0.640–0.770)** |
+<!-- clip:end -->
+
+**What it shows:**
+- **The fine-tuned EfficientNet is best on generators it was trained on** (AUC 0.986 vs 0.970).
+- **Frozen CLIP features generalise far better** to what wasn't in training:
+  - Unseen InsightFace swaps: **0.932 vs 0.765**.
+  - Unseen inpainting: 0.963 vs 0.939.
+  - Out-of-domain SDFVD videos: **0.708 vs 0.627**.
+- **This matches the UnivFD finding:** fine-tuning a CNN specialises it to its training generators, while large pretrained features carry more general "real image" structure.
+- **The one exception is unseen text-to-image fakes,** where the EfficientNet stays ahead (0.946 vs 0.903).
+- **The obvious next experiment** is to combine the two: fine-tuned CNN features and CLIP features, or a light fine-tune of CLIP itself.
+
+```bash
+pip install -r probes/clip/requirements.txt
+python -m probes.clip.run_probe --model ViT-B-16 --crops /path/to/crops --cache /tmp/clip_cache
+```
+
 ### Historical: the original research model
 
 The project started with an XceptionNet fine-tuned on FaceForensics++. Its trained weights were never committed to this repo, so it can't be re-evaluated. These are the figures reported at the time:
@@ -238,6 +270,7 @@ ethicura-ai/
 │   ├── kaggle/              # Runs run.py on a free Kaggle GPU
 │   ├── data.py, model.py, metrics.py
 │   ├── report.py            # Generates the README results tables from results/
+├── probes/clip/             # PyTorch CLIP linear-probe baseline (UnivFD), read-only on the crops
 ├── results/                 # results.json, browser_pipeline.json, per-run training metadata
 ├── tests/                   # pytest suite (model contract, calibration, metrics, data pipeline)
 ├── models/                  # ethicura_effnetb0.keras: the trained, calibrated detector
@@ -326,7 +359,7 @@ XLA JIT is disabled in `src/api.py` because its first-call compile stalled for m
 ## ‣ Next Steps:
 
 These are the measured weak spots, in priority order:
-- **Generalise to unseen face swaps:** this scores 0.765. Fixes would be training on more swap pipelines (SimSwap, FaceFusion and similar) and adding swap-specific augmentation.
+- **Generalise to unseen face swaps:** this scores 0.765. A frozen CLIP probe already reaches 0.932 here (see the PyTorch baseline). The next step is to fuse CLIP features with the fine-tuned CNN, or lightly fine-tune CLIP, and to train on more swap pipelines (SimSwap, FaceFusion and similar).
 - **Cross-dataset video:** this scores 0.63. Fixes would be adding real video data for training, and a temporal model across frames, since detection is currently frame by frame.
 - **Subgroup evaluation:** collect or annotate demographic labels and report per-group error rates.
 - **Browser crops:** fine-tune on BlazeFace crops as well as MTCNN crops, to close the remaining 0.004 AUC gap and the per-frame flips on turned heads.
@@ -347,6 +380,7 @@ These are the measured weak spots, in priority order:
 | Face Detection | MTCNN (Multi-Task Cascaded CNN) |
 | Classification | EfficientNetB0, trained in-house on DeepFakeFace |
 | Training & evaluation | TensorFlow `tf.data`, Kaggle (free CPU + GPU jobs), scikit-learn metrics, person-level bootstrap |
+| Baseline | PyTorch + OpenCLIP (CLIP ViT-B/16 linear probe, UnivFD recipe) |
 | Testing | pytest, GitHub Actions CI |
 | Interpretability | Grad-CAM (Class Activation Mapping) |
 | API | FastAPI |
